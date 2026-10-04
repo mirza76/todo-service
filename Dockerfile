@@ -43,7 +43,8 @@ LABEL org.opencontainers.image.title="todo-api" \
 COPY --from=build /out/todo-api /todo-api
 
 USER 65532:65532
-EXPOSE 8080
+# 8080: API and health probes. 9090: Prometheus metrics.
+EXPOSE 8080 9090
 
 # Exec form: the binary is PID 1 and receives SIGTERM directly, which the
 # graceful shutdown logic depends on.

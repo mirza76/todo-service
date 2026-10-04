@@ -25,6 +25,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.Port != 8080 {
 		t.Errorf("Port = %d, want 8080", cfg.Port)
 	}
+	if cfg.MetricsPort != 9090 {
+		t.Errorf("MetricsPort = %d, want 9090", cfg.MetricsPort)
+	}
 	if cfg.LogLevel != slog.LevelInfo {
 		t.Errorf("LogLevel = %v, want INFO", cfg.LogLevel)
 	}
@@ -42,6 +45,7 @@ func TestLoad_Defaults(t *testing.T) {
 func TestLoad_Overrides(t *testing.T) {
 	cfg, err := config.Load(env(map[string]string{
 		"PORT":                 " 9090 ",
+		"METRICS_PORT":         "9091",
 		"LOG_LEVEL":            "debug",
 		"HTTP_REQUEST_TIMEOUT": "2s",
 		"SHUTDOWN_DELAY":       "0s",
@@ -55,8 +59,8 @@ func TestLoad_Overrides(t *testing.T) {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
 
-	if cfg.Port != 9090 {
-		t.Errorf("Port = %d, want 9090", cfg.Port)
+	if cfg.Port != 9090 || cfg.MetricsPort != 9091 {
+		t.Errorf("Port = %d, MetricsPort = %d; want 9090, 9091", cfg.Port, cfg.MetricsPort)
 	}
 	if cfg.LogLevel != slog.LevelDebug {
 		t.Errorf("LogLevel = %v, want DEBUG", cfg.LogLevel)
@@ -137,6 +141,16 @@ func TestLoad_Invalid(t *testing.T) {
 				"DB_PASSWORD": "p", "DB_MAX_CONNS": "0", "DB_CONNECT_TIMEOUT": "0s",
 			},
 			wantErr: []string{"DB_MAX_CONNS must be positive", "DB_CONNECT_TIMEOUT must be positive"},
+		},
+		{
+			name:    "metrics port equal to API port",
+			vars:    map[string]string{"PORT": "8080", "METRICS_PORT": "8080"},
+			wantErr: []string{"METRICS_PORT must differ from PORT"},
+		},
+		{
+			name:    "negative metrics port",
+			vars:    map[string]string{"METRICS_PORT": "-1"},
+			wantErr: []string{"METRICS_PORT must be between 0 (disabled) and 65535"},
 		},
 		{
 			name:    "multiple problems are reported together",

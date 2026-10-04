@@ -24,6 +24,7 @@ configMapGenerator:
   - name: todo-api-config
     literals:
       - PORT=8080
+      - METRICS_PORT=9090
       - LOG_LEVEL=info
       - STORAGE_DRIVER=postgres
       - DB_HOST=postgres

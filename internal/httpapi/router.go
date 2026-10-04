@@ -7,9 +7,11 @@ import (
 	"bytes"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mirza76/todo-service/api"
+	"github.com/mirza76/todo-service/internal/metrics"
 	"github.com/mirza76/todo-service/internal/requestid"
 )
 
@@ -21,27 +23,41 @@ type Config struct {
 	Readiness      http.HandlerFunc
 	MaxBodyBytes   int64
 	RequestTimeout time.Duration
+	// Metrics is optional; when nil, requests are not instrumented.
+	Metrics *metrics.HTTP
 }
 
 // NewHandler builds the complete HTTP handler with routes and middleware.
 func NewHandler(cfg Config) http.Handler {
 	h := &todoHandler{svc: cfg.Service, logger: cfg.Logger, maxBodyBytes: cfg.MaxBodyBytes}
 
+	instrument := func(route string, next http.Handler) http.Handler {
+		if cfg.Metrics == nil {
+			return next
+		}
+		return cfg.Metrics.Instrument(route, next)
+	}
+	// Each route is instrumented at registration, labelled with its pattern
+	// (e.g. "/todos/{id}") so metric cardinality stays bounded.
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /todos", h.list)
-	mux.HandleFunc("POST /todos", h.create)
-	mux.HandleFunc("GET /todos/{id}", h.get)
-	mux.HandleFunc("PUT /todos/{id}", h.replace)
-	mux.HandleFunc("PATCH /todos/{id}", h.update)
-	mux.HandleFunc("DELETE /todos/{id}", h.delete)
-	mux.HandleFunc("GET /livez", cfg.Liveness)
-	mux.HandleFunc("GET /readyz", cfg.Readiness)
-	mux.HandleFunc("GET /openapi.yaml", serveSpec)
+	handle := func(pattern string, h http.HandlerFunc) {
+		_, route, _ := strings.Cut(pattern, " ")
+		mux.Handle(pattern, instrument(route, h))
+	}
+	handle("GET /todos", h.list)
+	handle("POST /todos", h.create)
+	handle("GET /todos/{id}", h.get)
+	handle("PUT /todos/{id}", h.replace)
+	handle("PATCH /todos/{id}", h.update)
+	handle("DELETE /todos/{id}", h.delete)
+	handle("GET /livez", cfg.Liveness)
+	handle("GET /readyz", cfg.Readiness)
+	handle("GET /openapi.yaml", serveSpec)
 
 	// Middleware is applied inside-out. requestid is outermost so every log
 	// line (including the access log) carries the ID; accessLog sees the
 	// final status, including 500s produced by recoverPanic.
-	handler := problemFallback(mux)
+	handler := problemFallback(mux, instrument)
 	handler = requestTimeout(cfg.RequestTimeout, handler)
 	handler = recoverPanic(cfg.Logger, handler)
 	handler = accessLog(cfg.Logger, handler)
@@ -57,13 +73,10 @@ func serveSpec(w http.ResponseWriter, _ *http.Request) {
 
 // problemFallback makes the mux's built-in 404 and 405 responses use the
 // same problem+json format as every other error, keeping the Allow header
-// the mux sets for 405.
-func problemFallback(mux *http.ServeMux) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, pattern := mux.Handler(r); pattern != "" {
-			mux.ServeHTTP(w, r)
-			return
-		}
+// the mux sets for 405. Unmatched requests are instrumented under a single
+// "unmatched" route so scanners probing random paths can't create series.
+func problemFallback(mux *http.ServeMux, instrument func(string, http.Handler) http.Handler) http.Handler {
+	unmatched := instrument("unmatched", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capture := &responseCapture{header: w.Header(), status: http.StatusOK}
 		mux.ServeHTTP(capture, r)
 
@@ -78,6 +91,14 @@ func problemFallback(mux *http.ServeMux) http.Handler {
 			w.WriteHeader(capture.status)
 			_, _ = w.Write(capture.body.Bytes())
 		}
+	}))
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern != "" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		unmatched.ServeHTTP(w, r)
 	})
 }
 

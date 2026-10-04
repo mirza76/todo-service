@@ -35,7 +35,7 @@ requests.
 | **Architecture** | Layered / hexagonal: HTTP → service → `Repository` port → adapters (in-memory, PostgreSQL). Standard library router, minimal dependencies |
 | **Data** | PostgreSQL shared by all replicas; embedded migrations made safe for concurrent replica startup with an advisory lock |
 | **Concurrency** | Optimistic concurrency control: `version` + `ETag` / `If-Match` (412 on stale writes), atomic compare-and-set in PostgreSQL, server-side retry so concurrent PATCHes never lose updates |
-| **Observability** | Structured JSON logs (`log/slog`), one access-log line per request, `X-Request-ID` correlation across response headers, error bodies, and every log line |
+| **Observability** | Prometheus metrics on a separate port (per-route rate, errors, latency histogram, in-flight, Go runtime, build info), structured JSON logs, `X-Request-ID` correlation across response headers, error bodies, and every log line |
 | **Resilience** | Graceful shutdown with a readiness drain (measured: **0 failed requests** during rolling restarts), DB connect retry with exponential backoff, per-request timeouts, panic recovery, server timeouts |
 | **Health** | `/livez` (process only) and `/readyz` (dependencies + shutdown state), wired to startup, liveness, and readiness probes |
 | **Docker** | Multi-stage build, static binary, distroless non-root image (~21 MB), BuildKit caching |
@@ -54,7 +54,7 @@ flowchart LR
     client([HTTP client]) --> mw
 
     subgraph httpapi [internal/httpapi]
-        mw[Middleware<br/>request ID · access log · panic recovery · timeout] --> h[Handlers<br/>decode · validate · encode]
+        mw[Middleware<br/>request ID · access log · panic recovery · timeout] --> h[Handlers<br/>metrics · decode · validate · encode]
     end
 
     h --> svc[internal/service<br/>use cases, IDs, clock, paging rules]
@@ -81,6 +81,7 @@ internal/
   service/               Use cases: create, get, list, replace, delete
   httpapi/               Routing, handlers, DTOs, JSON decoding, problem+json, middleware
   health/                Liveness and readiness handlers
+  metrics/               Prometheus registry and HTTP instrumentation
   requestid/             X-Request-ID middleware and log correlation
   storage/
     memory/              In-memory adapter (local development, tests)
@@ -254,6 +255,46 @@ curl -i -X PATCH localhost:8080/todos/<id> \
   concurrent PATCHes of different fields both survive. If it keeps losing the
   race, it returns `409 Conflict` and the client should retry.
 
+### Metrics
+
+Prometheus metrics are served at `GET /metrics` on a **separate port**
+(`METRICS_PORT`, default `9090`), so they are never exposed through the
+public API port or Service. In Kubernetes, pods carry the conventional
+`prometheus.io/scrape` annotations for automatic discovery.
+
+| Metric | Type | Labels |
+|---|---|---|
+| `http_requests_total` | counter | `method`, `route`, `code` |
+| `http_request_duration_seconds` | histogram (1 ms – 5 s) | `method`, `route` |
+| `http_requests_in_flight` | gauge | |
+| `todo_api_build_info` | gauge (always 1) | `version` |
+| `go_*`, `process_*` | runtime / process | |
+
+`route` is the route **pattern** (`/todos/{id}`), never the raw path, so the
+number of time series stays bounded no matter how many todos exist. Requests
+for unknown paths are counted as `route="unmatched"`. A test checks that IDs
+and scanner paths never become label values.
+
+Example queries:
+
+```promql
+# Request rate per route
+sum by (route) (rate(http_requests_total[5m]))
+
+# Error ratio (5xx)
+sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
+
+# p95 latency per route
+histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m])))
+```
+
+```bash
+# Locally
+curl localhost:9090/metrics
+# In kind
+kubectl --context kind-todo -n todo port-forward deploy/todo-api 9090:9090
+```
+
 ### Request IDs
 
 Every response carries an `X-Request-ID` header, and every error body
@@ -350,7 +391,8 @@ misconfigured.
 
 | Variable | Default | Description |
 |---|---|---|
-| `PORT` | `8080` | HTTP listen port |
+| `PORT` | `8080` | HTTP listen port (API and health probes) |
+| `METRICS_PORT` | `9090` | Prometheus `/metrics` listen port; `0` disables it; must differ from `PORT` |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` (JSON logs to stdout) |
 | `STORAGE_DRIVER` | `memory` | `memory` or `postgres` |
 | `HTTP_READ_HEADER_TIMEOUT` | `5s` | Max time to read request headers (Slowloris protection) |
@@ -386,7 +428,7 @@ The [Dockerfile](Dockerfile) has two stages:
 2. **Runtime:** `gcr.io/distroless/static-debian13:nonroot`, which contains no
    shell or package manager and runs as UID 65532. The final image is ~21 MB.
 
-The binary is PID 1 (exec-form `ENTRYPOINT`), so it receives `SIGTERM`
+The image exposes `8080` (API and probes) and `9090` (metrics). The binary is PID 1 (exec-form `ENTRYPOINT`), so it receives `SIGTERM`
 directly and shuts down gracefully.
 
 ```bash
@@ -637,8 +679,8 @@ order:
 
 - **Conditional GET:** `If-None-Match` returning `304 Not Modified`, reusing
   the existing ETags
-- **Observability:** Prometheus `/metrics` (rate, errors, duration) and
-  OpenTelemetry tracing
+- **Observability:** OpenTelemetry tracing, connection-pool metrics, and
+  alerting rules / SLOs on the existing metrics
 - **CI/CD extensions:** image vulnerability scan (Trivy), the kind end-to-end
   test with failure drills in CI, and image publishing to a registry
 - **NetworkPolicy** limiting PostgreSQL ingress to API pods

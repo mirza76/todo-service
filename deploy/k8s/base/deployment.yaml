@@ -17,6 +17,11 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: todo-api
+      annotations:
+        # Conventional annotations for Prometheus pod discovery.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: /metrics
     spec:
       serviceAccountName: todo-api
       automountServiceAccountToken: false
@@ -43,6 +48,9 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            # Separate listener: metrics are not exposed through the Service.
+            - name: metrics
+              containerPort: 9090
           envFrom:
             - configMapRef:
                 name: todo-api-config

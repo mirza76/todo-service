@@ -18,9 +18,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/mirza76/todo-service/internal/config"
 	"github.com/mirza76/todo-service/internal/health"
 	"github.com/mirza76/todo-service/internal/httpapi"
+	"github.com/mirza76/todo-service/internal/metrics"
 	"github.com/mirza76/todo-service/internal/requestid"
 	"github.com/mirza76/todo-service/internal/service"
 	"github.com/mirza76/todo-service/internal/storage/memory"
@@ -67,6 +70,17 @@ func run() error {
 	}
 	defer store.close()
 
+	reg := metrics.NewRegistry(version)
+	if cfg.MetricsPort != 0 {
+		stopMetrics, err := serveMetrics(ctx, cfg.MetricsPort, reg, logger)
+		if err != nil {
+			return err
+		}
+		// Runs after the API server has drained, so the final requests are
+		// still observable.
+		defer stopMetrics()
+	}
+
 	checker := health.New(logger, readinessTimeout, store.checks...)
 	handler := httpapi.NewHandler(httpapi.Config{
 		Service:        service.New(store.repo),
@@ -75,6 +89,7 @@ func run() error {
 		Readiness:      checker.Ready,
 		MaxBodyBytes:   cfg.HTTP.MaxBodyBytes,
 		RequestTimeout: cfg.HTTP.RequestTimeout,
+		Metrics:        metrics.NewHTTP(reg),
 	})
 
 	srv := &http.Server{
@@ -93,6 +108,31 @@ func run() error {
 	}
 
 	return serve(ctx, stop, srv, ln, checker, cfg.Shutdown, logger)
+}
+
+// serveMetrics exposes /metrics on its own port, keeping operational data
+// off the public API listener. It returns a function that stops the server.
+func serveMetrics(ctx context.Context, port int, reg *prometheus.Registry, logger *slog.Logger) (func(), error) {
+	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", net.JoinHostPort("", strconv.Itoa(port)))
+	if err != nil {
+		return nil, fmt.Errorf("listen for metrics: %w", err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metrics.Handler(reg))
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+
+	go func() {
+		if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("metrics server failed", slog.Any("error", err))
+		}
+	}()
+	logger.Info("metrics server listening", slog.String("addr", ln.Addr().String()))
+
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}, nil
 }
 
 // storage bundles a repository with its readiness checks and cleanup.

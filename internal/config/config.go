@@ -22,9 +22,12 @@ const (
 
 // Config is the complete, validated runtime configuration.
 type Config struct {
-	Port     int
-	LogLevel slog.Level
-	Storage  string
+	Port int
+	// MetricsPort serves Prometheus /metrics on a separate listener so it
+	// is never exposed on the public API port. 0 disables it.
+	MetricsPort int
+	LogLevel    slog.Level
+	Storage     string
 
 	HTTP     HTTPConfig
 	Shutdown ShutdownConfig
@@ -82,9 +85,10 @@ func Load(lookup LookupFunc) (Config, error) {
 	p := parser{lookup: lookup}
 
 	cfg := Config{
-		Port:     p.int("PORT", 8080),
-		LogLevel: p.logLevel("LOG_LEVEL", slog.LevelInfo),
-		Storage:  p.string("STORAGE_DRIVER", StorageMemory),
+		Port:        p.int("PORT", 8080),
+		MetricsPort: p.int("METRICS_PORT", 9090),
+		LogLevel:    p.logLevel("LOG_LEVEL", slog.LevelInfo),
+		Storage:     p.string("STORAGE_DRIVER", StorageMemory),
 		HTTP: HTTPConfig{
 			ReadHeaderTimeout: p.duration("HTTP_READ_HEADER_TIMEOUT", 5*time.Second),
 			ReadTimeout:       p.duration("HTTP_READ_TIMEOUT", 10*time.Second),
@@ -120,6 +124,12 @@ func (c Config) validate() []error {
 
 	if c.Port < 1 || c.Port > 65535 {
 		errs = append(errs, fmt.Errorf("PORT must be between 1 and 65535, got %d", c.Port))
+	}
+	if c.MetricsPort < 0 || c.MetricsPort > 65535 {
+		errs = append(errs, fmt.Errorf("METRICS_PORT must be between 0 (disabled) and 65535, got %d", c.MetricsPort))
+	}
+	if c.MetricsPort != 0 && c.MetricsPort == c.Port {
+		errs = append(errs, fmt.Errorf("METRICS_PORT must differ from PORT (%d)", c.Port))
 	}
 	if c.HTTP.MaxBodyBytes < 1 {
 		errs = append(errs, errors.New("HTTP_MAX_BODY_BYTES must be positive"))
