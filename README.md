@@ -1,5 +1,7 @@
 # todo-service
 
+[![CI](https://github.com/mirza76/todo-service/actions/workflows/ci.yml/badge.svg)](https://github.com/mirza76/todo-service/actions/workflows/ci.yml)
+
 A ToDo REST microservice in Go, built to production standards: containerized
 with Docker, deployed to Kubernetes with Kustomize, backed by PostgreSQL, and
 designed to survive restarts, rollouts, and pod failures without dropping
@@ -37,6 +39,7 @@ requests.
 | **Health** | `/livez` (process only) and `/readyz` (dependencies + shutdown state), wired to startup, liveness, and readiness probes |
 | **Docker** | Multi-stage build, static binary, distroless non-root image (~21 MB), BuildKit caching |
 | **Kubernetes** | 2 replicas spread across nodes, requests/limits, PodDisruptionBudget, ConfigMap + Secret, `restricted` Pod Security Standard, read-only root filesystem, no service-account token |
+| **CI** | GitHub Actions: lint, race-enabled tests incl. PostgreSQL integration, `govulncheck`, Docker build + smoke test; actions pinned to commit SHAs, read-only token |
 | **Quality** | Unit, handler, and integration tests (real PostgreSQL via Testcontainers), one shared contract suite for every storage adapter, race detector, 17 linters, end-to-end smoke test with failure drills |
 
 ---
@@ -576,8 +579,8 @@ order:
   returning `412 Precondition Failed` on conflicting writes
 - **Observability:** Prometheus `/metrics` (rate, errors, duration) and
   OpenTelemetry tracing
-- **CI/CD:** GitHub Actions for lint, tests, image build, vulnerability scan
-  (Trivy, `govulncheck`), and the kind end-to-end test
+- **CI/CD extensions:** image vulnerability scan (Trivy), the kind end-to-end
+  test with failure drills in CI, and image publishing to a registry
 - **NetworkPolicy** limiting PostgreSQL ingress to API pods
 - **HorizontalPodAutoscaler** on CPU or request rate
 - **Ingress / Gateway API** with TLS
