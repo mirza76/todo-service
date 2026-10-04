@@ -42,6 +42,7 @@ func Run(t *testing.T, newRepo Factory) {
 		{"ListEmpty", testListEmpty},
 		{"ListOrdering", testListOrdering},
 		{"ListPagination", testListPagination},
+		{"ListFilterCompleted", testListFilterCompleted},
 		{"CanceledContext", testCanceledContext},
 	}
 
@@ -210,6 +211,51 @@ func testListPagination(t *testing.T, repo todo.Repository) {
 				t.Error("Items is nil, want non-nil slice")
 			}
 			assertIDs(t, page.Items, tt.want...)
+		})
+	}
+}
+
+func testListFilterCompleted(t *testing.T, repo todo.Repository) {
+	// Alternate open/done so each filter has to skip interleaved rows.
+	var open, done []todo.Todo
+	for i := range 6 {
+		item, err := todo.New(uuid.New(), fmt.Sprintf("item %d", i), i%2 == 1, baseTime.Add(time.Duration(i)*time.Second))
+		if err != nil {
+			t.Fatalf("todo.New() unexpected error: %v", err)
+		}
+		mustCreate(t, repo, item)
+		if item.Completed {
+			done = append(done, item)
+		} else {
+			open = append(open, item)
+		}
+	}
+	yes, no := true, false
+
+	tests := []struct {
+		name      string
+		params    todo.ListParams
+		wantTotal int
+		want      []todo.Todo
+	}{
+		{"completed only", todo.ListParams{Limit: 10, Completed: &yes}, 3, done},
+		{"open only", todo.ListParams{Limit: 10, Completed: &no}, 3, open},
+		{"no filter", todo.ListParams{Limit: 2}, 6, nil},
+		{"filter with pagination", todo.ListParams{Limit: 1, Offset: 1, Completed: &yes}, 3, done[1:2]},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			page, err := repo.List(t.Context(), tt.params)
+			if err != nil {
+				t.Fatalf("List() unexpected error: %v", err)
+			}
+			if page.Total != tt.wantTotal {
+				t.Errorf("Total = %d, want %d", page.Total, tt.wantTotal)
+			}
+			if tt.want != nil {
+				assertIDs(t, page.Items, tt.want...)
+			}
 		})
 	}
 }

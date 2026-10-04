@@ -55,6 +55,30 @@ func (t *Todo) Replace(title string, completed bool, now time.Time) error {
 	return nil
 }
 
+// Patch holds a partial update; nil fields are left unchanged.
+type Patch struct {
+	Title     *string
+	Completed *bool
+}
+
+// IsEmpty reports whether the patch changes nothing.
+func (p Patch) IsEmpty() bool {
+	return p.Title == nil && p.Completed == nil
+}
+
+// Apply merges p into t and validates the result with the same rules as
+// Replace. On validation failure t is left unchanged.
+func (t *Todo) Apply(p Patch, now time.Time) error {
+	title, completed := t.Title, t.Completed
+	if p.Title != nil {
+		title = *p.Title
+	}
+	if p.Completed != nil {
+		completed = *p.Completed
+	}
+	return t.Replace(title, completed, now)
+}
+
 // normalizeTitle trims surrounding whitespace and enforces title invariants.
 func normalizeTitle(title string) (string, error) {
 	title = strings.TrimSpace(title)

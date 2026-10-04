@@ -145,6 +145,64 @@ func TestReplace_Errors(t *testing.T) {
 	})
 }
 
+func TestUpdate(t *testing.T) {
+	svc, clock := newService(t)
+	created, err := svc.Create(t.Context(), service.CreateInput{Title: "Draft"})
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	done := true
+
+	t.Run("partial update changes only given fields", func(t *testing.T) {
+		clock.Advance(time.Minute)
+		got, err := svc.Update(t.Context(), created.ID, todo.Patch{Completed: &done})
+		if err != nil {
+			t.Fatalf("Update() unexpected error: %v", err)
+		}
+		if got.Title != "Draft" || !got.Completed || !got.UpdatedAt.After(created.UpdatedAt) {
+			t.Errorf("got %+v, want title Draft, completed true, newer updated_at", got)
+		}
+		stored, err := svc.Get(t.Context(), created.ID)
+		if err != nil {
+			t.Fatalf("Get() unexpected error: %v", err)
+		}
+		if stored != got {
+			t.Errorf("stored = %+v, want %+v", stored, got)
+		}
+	})
+
+	t.Run("empty patch is a no-op", func(t *testing.T) {
+		before, err := svc.Get(t.Context(), created.ID)
+		if err != nil {
+			t.Fatalf("Get() unexpected error: %v", err)
+		}
+		clock.Advance(time.Minute)
+		got, err := svc.Update(t.Context(), created.ID, todo.Patch{})
+		if err != nil {
+			t.Fatalf("Update() unexpected error: %v", err)
+		}
+		if got != before {
+			t.Errorf("empty patch changed todo: got %+v, want %+v", got, before)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		_, err := svc.Update(t.Context(), uuid.New(), todo.Patch{Completed: &done})
+		if !errors.Is(err, todo.ErrNotFound) {
+			t.Fatalf("Update() error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("invalid title", func(t *testing.T) {
+		blank := " "
+		_, err := svc.Update(t.Context(), created.ID, todo.Patch{Title: &blank})
+		var verr *todo.ValidationError
+		if !errors.As(err, &verr) {
+			t.Fatalf("Update() error = %v, want *todo.ValidationError", err)
+		}
+	})
+}
+
 func TestDelete(t *testing.T) {
 	svc, _ := newService(t)
 	created, err := svc.Create(t.Context(), service.CreateInput{Title: "Temp"})

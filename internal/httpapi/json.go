@@ -8,19 +8,25 @@ import (
 	"mime"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 )
 
+const (
+	mediaTypeJSON       = "application/json"
+	mediaTypeMergePatch = "application/merge-patch+json"
+)
+
 // decodeJSON strictly decodes a single JSON object from the request body
-// into dst. It enforces the content type, a body size limit, rejects unknown
-// fields and trailing data, and converts decoder errors into client-friendly
-// messages.
-func decodeJSON(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64) error {
+// into dst. It enforces the content type (one of mediaTypes), a body size
+// limit, rejects unknown fields and trailing data, and converts decoder
+// errors into client-friendly messages.
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64, mediaTypes ...string) error {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
+	if err != nil || !slices.Contains(mediaTypes, mediaType) {
 		return &requestError{
 			status: http.StatusUnsupportedMediaType,
-			detail: "Content-Type must be application/json.",
+			detail: fmt.Sprintf("Content-Type must be %s.", strings.Join(mediaTypes, " or ")),
 		}
 	}
 

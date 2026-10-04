@@ -29,7 +29,7 @@ requests.
 
 | Area | What it does |
 |---|---|
-| **API** | RESTful CRUD on `/todos`, correct status codes, `Location` on create, offset pagination, [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `application/problem+json` errors with per-field validation details |
+| **API** | RESTful CRUD on `/todos` with full (PUT) and partial (PATCH, JSON Merge Patch) updates, filtering, offset pagination, correct status codes, `Location` on create, [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `application/problem+json` errors with per-field validation details |
 | **Architecture** | Layered / hexagonal: HTTP → service → `Repository` port → adapters (in-memory, PostgreSQL). Standard library router, minimal dependencies |
 | **Data** | PostgreSQL shared by all replicas; embedded migrations made safe for concurrent replica startup with an advisory lock |
 | **Resilience** | Graceful shutdown with a readiness drain (measured: **0 failed requests** during rolling restarts), DB connect retry with exponential backoff, per-request timeouts, panic recovery, server timeouts |
@@ -123,10 +123,11 @@ Base URL: `http://localhost:8080`. All request and response bodies are JSON.
 
 | Method | Path | Description | Success |
 |---|---|---|---|
-| `GET` | `/todos` | List todos (paginated) | `200 OK` |
+| `GET` | `/todos` | List todos (filtered, paginated) | `200 OK` |
 | `POST` | `/todos` | Create a todo | `201 Created` + `Location` header |
 | `GET` | `/todos/{id}` | Get one todo | `200 OK` |
 | `PUT` | `/todos/{id}` | Replace a todo (all fields required) | `200 OK` |
+| `PATCH` | `/todos/{id}` | Partially update a todo | `200 OK` |
 | `DELETE` | `/todos/{id}` | Delete a todo | `204 No Content` |
 | `GET` | `/livez` | Liveness probe | `200 OK` |
 | `GET` | `/readyz` | Readiness probe | `200 OK` / `503` |
@@ -147,7 +148,7 @@ Base URL: `http://localhost:8080`. All request and response bodies are JSON.
 |---|---|---|
 | `id` | string (UUIDv7) | Server-generated, time-ordered |
 | `title` | string | Required. Surrounding whitespace is trimmed; 1–200 characters; no control characters |
-| `completed` | boolean | Optional on create (defaults to `false`), required on replace |
+| `completed` | boolean | Optional on create (defaults to `false`), required on replace, optional on patch |
 | `created_at` | string (RFC 3339, UTC) | Set on create, never changes |
 | `updated_at` | string (RFC 3339, UTC) | Updated on every change |
 
@@ -163,14 +164,28 @@ Base URL: `http://localhost:8080`. All request and response bodies are JSON.
 { "title": "Buy oat milk", "completed": true }
 ```
 
-**List:** `GET /todos?limit=20&offset=0`
+**Partial update:** `PATCH /todos/{id}` follows
+[JSON Merge Patch (RFC 7396)](https://www.rfc-editor.org/rfc/rfc7396). Send
+only the fields to change; the rest stay as they are. Accepts
+`Content-Type: application/json` or `application/merge-patch+json`.
+```json
+{ "completed": true }
+```
+- An empty patch `{}` changes nothing and does not bump `updated_at`.
+- `null` means "remove the field" in merge patch. Neither field can be
+  removed, so `null` is rejected with `422`.
+- The merged result is validated with the same rules as create and replace.
+
+**List:** `GET /todos?completed=false&limit=20&offset=0`
 
 | Query parameter | Default | Rules |
 |---|---|---|
+| `completed` | (none) | `true` or `false`, exactly; filters by status |
 | `limit` | `20` | Integer, 1–100 |
 | `offset` | `0` | Integer, ≥ 0 |
 
-Results are ordered by `created_at`, then `id`, so pages are stable.
+Results are ordered by `created_at`, then `id`, so pages are stable. `total`
+counts the todos that match the filter.
 
 ```json
 {
@@ -200,12 +215,12 @@ Every error, including unknown routes and wrong methods, uses
 
 | Status | When |
 |---|---|
-| `400 Bad Request` | The request can't be parsed: malformed JSON, wrong JSON type, unknown field, trailing data, non-integer `limit`/`offset` |
+| `400 Bad Request` | The request can't be parsed: malformed JSON, body not a JSON object, wrong JSON type, unknown field, trailing data, non-integer `limit`/`offset`, `completed` not `true`/`false` |
 | `404 Not Found` | Unknown todo ID, malformed ID, or unknown route |
 | `405 Method Not Allowed` | Route exists but not for this method (includes an `Allow` header) |
 | `413 Content Too Large` | Body exceeds `HTTP_MAX_BODY_BYTES` |
-| `415 Unsupported Media Type` | `Content-Type` is not `application/json` |
-| `422 Unprocessable Entity` | Well-formed but breaks a rule: missing required field, invalid title, `limit` out of range. Lists every invalid field |
+| `415 Unsupported Media Type` | `Content-Type` is not `application/json` (PATCH also accepts `application/merge-patch+json`) |
+| `422 Unprocessable Entity` | Well-formed but breaks a rule: missing required field, `null` in a patch, invalid title, `limit` out of range. Lists every invalid field |
 | `500 Internal Server Error` | Unexpected failure. Details are logged, never returned to the client |
 | `503 Service Unavailable` | The request exceeded `HTTP_REQUEST_TIMEOUT` |
 
@@ -220,6 +235,9 @@ curl -i -X POST localhost:8080/todos \
 # List (second page of 10)
 curl 'localhost:8080/todos?limit=10&offset=10'
 
+# List only open todos
+curl 'localhost:8080/todos?completed=false'
+
 # Get
 curl localhost:8080/todos/<id>
 
@@ -227,6 +245,11 @@ curl localhost:8080/todos/<id>
 curl -X PUT localhost:8080/todos/<id> \
   -H 'Content-Type: application/json' \
   -d '{"title":"Buy oat milk","completed":true}'
+
+# Mark as done (partial update)
+curl -X PATCH localhost:8080/todos/<id> \
+  -H 'Content-Type: application/json' \
+  -d '{"completed":true}'
 
 # Delete
 curl -i -X DELETE localhost:8080/todos/<id>
@@ -405,7 +428,7 @@ Example smoke test result on kind:
   ✓ rolling restart: 126 requests, 0 failed
 == Drill C: restart PostgreSQL, data must survive
   ✓ data intact after DB restart
-All 21 checks passed.
+All 26 checks passed.
 ```
 
 ---
@@ -472,7 +495,10 @@ schema behind.
 ### 5. API semantics ([ADR 0004](docs/adr/0004-error-model-and-status-codes.md))
 
 - **PUT is a full replacement** (RFC 9110), so `title` and `completed` are both
-  required. Partial updates belong to PATCH.
+  required. **PATCH is a partial update** using JSON Merge Patch (RFC 7396).
+  The body is decoded in two passes: a strict typed pass for precise errors,
+  and a raw pass to tell an absent field (leave unchanged) from an explicit
+  `null` (rejected).
 - **400 vs 422:** 400 means the request can't be parsed; 422 means it parsed
   but breaks a rule. Clients can tell "fix your encoding" apart from "fix your
   data".
@@ -511,9 +537,9 @@ the API and PostgreSQL comply:
 
 ## Known limitations
 
-- **Concurrent updates are last-write-wins.** Two clients replacing the same
-  todo at the same time won't detect each other's changes (see future
-  improvements: optimistic concurrency).
+- **Concurrent updates are last-write-wins.** Two clients updating the same
+  todo at the same time (PUT or PATCH) won't detect each other's changes (see
+  future improvements: optimistic concurrency).
 - **Offset pagination** gets slower for very deep pages and can shift if rows
   are inserted between page requests. Cursor (keyset) pagination would fix
   both.
@@ -530,7 +556,6 @@ the API and PostgreSQL comply:
 Deliberately left out of scope to focus on core quality, in rough priority
 order:
 
-- **Partial updates** with `PATCH /todos/{id}` and filtering (`?completed=true`)
 - **Optimistic concurrency:** a `version` field with `ETag` / `If-Match`
   returning `412 Precondition Failed` on conflicting writes
 - **Observability:** request IDs in logs, Prometheus `/metrics` (rate, errors,

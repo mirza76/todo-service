@@ -70,7 +70,9 @@ func (r *Repository) List(ctx context.Context, params todo.ListParams) (todo.Pag
 	r.mu.RLock()
 	all := make([]todo.Todo, 0, len(r.items))
 	for _, t := range r.items {
-		all = append(all, t)
+		if params.Completed == nil || t.Completed == *params.Completed {
+			all = append(all, t)
+		}
 	}
 	r.mu.RUnlock()
 

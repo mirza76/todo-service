@@ -117,6 +117,27 @@ func (s *Service) Replace(ctx context.Context, id uuid.UUID, in ReplaceInput) (t
 	return t, nil
 }
 
+// Update applies a partial update (PATCH semantics). An empty patch is a
+// no-op that returns the current todo without bumping UpdatedAt.
+//
+// Concurrent updates of the same todo are last-write-wins.
+func (s *Service) Update(ctx context.Context, id uuid.UUID, patch todo.Patch) (todo.Todo, error) {
+	t, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return todo.Todo{}, fmt.Errorf("get todo %s: %w", id, err)
+	}
+	if patch.IsEmpty() {
+		return t, nil
+	}
+	if err := t.Apply(patch, s.timestamp()); err != nil {
+		return todo.Todo{}, err
+	}
+	if err := s.repo.Update(ctx, t); err != nil {
+		return todo.Todo{}, fmt.Errorf("update todo %s: %w", id, err)
+	}
+	return t, nil
+}
+
 // Delete removes a todo.
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	if err := s.repo.Delete(ctx, id); err != nil {

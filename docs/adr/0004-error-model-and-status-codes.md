@@ -30,7 +30,11 @@ to act on, without exposing internal details.
   - `500`: anything unexpected. Full details are logged; the client gets a
     generic message.
 - **PUT is a full replacement** (RFC 9110 §9.3.4): all client-controlled fields
-  are required. Partial updates are PATCH's job.
+  are required.
+- **PATCH is JSON Merge Patch** (RFC 7396): absent fields are unchanged; an
+  explicit `null` (merge-patch "remove") is rejected with 422, since neither
+  field can be removed; a non-object body (including bare `null`) is a 400.
+  An empty patch is a no-op.
 
 ## Alternatives considered
 

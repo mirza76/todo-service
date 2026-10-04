@@ -126,14 +126,19 @@ func (r *Repository) List(ctx context.Context, params todo.ListParams) (todo.Pag
 	var page todo.Page
 	txOpts := pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
 	err := pgx.BeginTxFunc(ctx, r.pool, txOpts, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM todos`).Scan(&page.Total); err != nil {
+		// A NULL $1 disables the completed filter.
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM todos WHERE ($1::boolean IS NULL OR completed = $1)`,
+			params.Completed,
+		).Scan(&page.Total); err != nil {
 			return fmt.Errorf("count todos: %w", err)
 		}
 		rows, err := tx.Query(ctx,
 			`SELECT id, title, completed, created_at, updated_at FROM todos
+			 WHERE ($1::boolean IS NULL OR completed = $1)
 			 ORDER BY created_at, id
-			 LIMIT $1 OFFSET $2`,
-			params.Limit, params.Offset)
+			 LIMIT $2 OFFSET $3`,
+			params.Completed, params.Limit, params.Offset)
 		if err != nil {
 			return fmt.Errorf("query todos: %w", err)
 		}

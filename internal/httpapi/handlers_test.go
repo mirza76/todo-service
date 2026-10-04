@@ -217,6 +217,107 @@ func TestReplace(t *testing.T) {
 	}
 }
 
+func TestPatch(t *testing.T) {
+	h := newRealHandler()
+	created := createTodo(t, h, "Draft")
+	path := "/todos/" + created.ID
+
+	t.Run("completed only keeps title", func(t *testing.T) {
+		rec := do(t, h, request{method: http.MethodPatch, path: path, body: `{"completed":true}`})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+		}
+		got := decode[todoJSON](t, rec)
+		if got.Title != "Draft" || !got.Completed || !got.CreatedAt.Equal(created.CreatedAt) {
+			t.Errorf("got %+v, want title Draft completed true created_at unchanged", got)
+		}
+	})
+
+	t.Run("title only keeps completed, merge-patch content type", func(t *testing.T) {
+		rec := do(t, h, request{method: http.MethodPatch, path: path, body: `{"title":" Final "}`, contentType: "application/merge-patch+json"})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+		}
+		got := decode[todoJSON](t, rec)
+		if got.Title != "Final" || !got.Completed {
+			t.Errorf("got %+v, want title Final completed true", got)
+		}
+	})
+
+	t.Run("empty patch returns todo unchanged", func(t *testing.T) {
+		before := decode[todoJSON](t, do(t, h, request{method: http.MethodGet, path: path}))
+		rec := do(t, h, request{method: http.MethodPatch, path: path, body: `{}`})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+		}
+		if got := decode[todoJSON](t, rec); got != before {
+			t.Errorf("got %+v, want unchanged %+v", got, before)
+		}
+	})
+
+	t.Run("errors", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			path        string
+			body        string
+			contentType string
+			wantStatus  int
+			wantDetail  string
+			wantFields  map[string]string
+		}{
+			{"null title", path, `{"title":null}`, "", http.StatusUnprocessableEntity, "", map[string]string{"title": "must not be null"}},
+			{"null both", path, `{"title":null,"completed":null}`, "", http.StatusUnprocessableEntity, "", map[string]string{"title": "must not be null", "completed": "must not be null"}},
+			{"blank title", path, `{"title":"  "}`, "", http.StatusUnprocessableEntity, "", map[string]string{"title": "must not be empty"}},
+			{"wrong type", path, `{"completed":"yes"}`, "", http.StatusBadRequest, `Field "completed" must be a boolean`, nil},
+			{"unknown field", path, `{"done":true}`, "", http.StatusBadRequest, `unknown field "done"`, nil},
+			{"null body", path, `null`, "", http.StatusBadRequest, "must be a JSON object", nil},
+			{"array body", path, `[{"completed":true}]`, "", http.StatusBadRequest, "must be a JSON object", nil},
+			{"unsupported content type", path, `{"completed":true}`, "text/plain", http.StatusUnsupportedMediaType, "application/json or application/merge-patch+json", nil},
+			{"unknown id", "/todos/" + uuid.NewString(), `{"completed":true}`, "", http.StatusNotFound, "", nil},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				rec := do(t, h, request{method: http.MethodPatch, path: tt.path, body: tt.body, contentType: tt.contentType})
+				p := assertProblem(t, rec, tt.wantStatus, tt.wantDetail)
+				if tt.wantFields != nil {
+					assertFieldErrors(t, p, tt.wantFields)
+				}
+			})
+		}
+	})
+}
+
+func TestList_FilterCompleted(t *testing.T) {
+	h := newRealHandler()
+	open := createTodo(t, h, "open")
+	done := createTodo(t, h, "done")
+	if rec := do(t, h, request{method: http.MethodPatch, path: "/todos/" + done.ID, body: `{"completed":true}`}); rec.Code != http.StatusOK {
+		t.Fatalf("patch: status %d", rec.Code)
+	}
+
+	tests := []struct {
+		query  string
+		wantID string
+	}{
+		{"completed=true", done.ID},
+		{"completed=false", open.ID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			got := decode[listJSON](t, do(t, h, request{method: http.MethodGet, path: "/todos?" + tt.query}))
+			if got.Total != 1 || len(got.Items) != 1 || got.Items[0].ID != tt.wantID {
+				t.Errorf("got total %d items %+v, want only %s", got.Total, got.Items, tt.wantID)
+			}
+		})
+	}
+
+	for _, bad := range []string{"completed=yes", "completed=1", "completed=TRUE", "completed="} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			assertProblem(t, do(t, h, request{method: http.MethodGet, path: "/todos?" + bad}), http.StatusBadRequest, `"completed" must be true or false`)
+		})
+	}
+}
+
 func TestDelete(t *testing.T) {
 	h := newRealHandler()
 	created := createTodo(t, h, "Temp")

@@ -94,6 +94,68 @@ func TestReplace(t *testing.T) {
 	})
 }
 
+func TestApply(t *testing.T) {
+	created, err := todo.New(testID, "Original", false, testTime)
+	if err != nil {
+		t.Fatalf("New() unexpected error: %v", err)
+	}
+	later := testTime.Add(time.Hour)
+	title := func(s string) *string { return &s }
+	done := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name  string
+		patch todo.Patch
+		want  todo.Todo
+	}{
+		{
+			name:  "title only keeps completed",
+			patch: todo.Patch{Title: title(" Renamed ")},
+			want:  todo.Todo{ID: testID, Title: "Renamed", Completed: false, CreatedAt: testTime, UpdatedAt: later},
+		},
+		{
+			name:  "completed only keeps title",
+			patch: todo.Patch{Completed: done(true)},
+			want:  todo.Todo{ID: testID, Title: "Original", Completed: true, CreatedAt: testTime, UpdatedAt: later},
+		},
+		{
+			name:  "both fields",
+			patch: todo.Patch{Title: title("Both"), Completed: done(true)},
+			want:  todo.Todo{ID: testID, Title: "Both", Completed: true, CreatedAt: testTime, UpdatedAt: later},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := created
+			if err := got.Apply(tt.patch, later); err != nil {
+				t.Fatalf("Apply() unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("after Apply() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("invalid title leaves todo unchanged", func(t *testing.T) {
+		got := created
+		err := got.Apply(todo.Patch{Title: title("  "), Completed: done(true)}, later)
+		assertTitleError(t, err, "must not be empty")
+		if got != created {
+			t.Errorf("todo mutated on failed Apply(): got %+v, want %+v", got, created)
+		}
+	})
+
+	t.Run("IsEmpty", func(t *testing.T) {
+		if !(todo.Patch{}).IsEmpty() {
+			t.Error("zero Patch IsEmpty() = false, want true")
+		}
+		if (todo.Patch{Completed: done(false)}).IsEmpty() {
+			t.Error("Patch with Completed IsEmpty() = true, want false")
+		}
+	})
+}
+
 func TestValidationError_Error(t *testing.T) {
 	err := &todo.ValidationError{Fields: []todo.FieldError{
 		{Field: "title", Message: "must not be empty"},

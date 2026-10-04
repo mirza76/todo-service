@@ -21,6 +21,7 @@ type TodoService interface {
 	Get(ctx context.Context, id uuid.UUID) (todo.Todo, error)
 	List(ctx context.Context, params todo.ListParams) (todo.Page, error)
 	Replace(ctx context.Context, id uuid.UUID, in service.ReplaceInput) (todo.Todo, error)
+	Update(ctx context.Context, id uuid.UUID, patch todo.Patch) (todo.Todo, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 
@@ -56,7 +57,7 @@ func (h *todoHandler) list(w http.ResponseWriter, r *http.Request) {
 
 func (h *todoHandler) create(w http.ResponseWriter, r *http.Request) {
 	var req createTodoRequest
-	if err := decodeJSON(w, r, &req, h.maxBodyBytes); err != nil {
+	if err := decodeJSON(w, r, &req, h.maxBodyBytes, mediaTypeJSON); err != nil {
 		h.fail(w, r, err)
 		return
 	}
@@ -95,7 +96,7 @@ func (h *todoHandler) replace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req replaceTodoRequest
-	if err := decodeJSON(w, r, &req, h.maxBodyBytes); err != nil {
+	if err := decodeJSON(w, r, &req, h.maxBodyBytes, mediaTypeJSON); err != nil {
 		h.fail(w, r, err)
 		return
 	}
@@ -105,6 +106,30 @@ func (h *todoHandler) replace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, err := h.svc.Replace(r.Context(), id, in)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toTodoResponse(t))
+}
+
+func (h *todoHandler) update(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	var req patchTodoRequest
+	if err := decodeJSON(w, r, &req, h.maxBodyBytes, mediaTypeJSON, mediaTypeMergePatch); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	patch, err := req.toPatch()
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	t, err := h.svc.Update(r.Context(), id, patch)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -139,8 +164,9 @@ func pathID(r *http.Request) (uuid.UUID, error) {
 	return id, nil
 }
 
-// parseListParams reads limit and offset. Non-integer values are malformed
-// requests (400); range checks belong to the service layer (422).
+// parseListParams reads limit, offset, and the completed filter. Values that
+// can't be parsed are malformed requests (400); range checks belong to the
+// service layer (422).
 func parseListParams(q url.Values) (todo.ListParams, error) {
 	params := todo.ListParams{Limit: service.DefaultListLimit}
 	for _, p := range []struct {
@@ -158,6 +184,19 @@ func parseListParams(q url.Values) (todo.ListParams, error) {
 			return todo.ListParams{}, badRequest(fmt.Sprintf("Query parameter %q must be an integer.", p.name))
 		}
 		*p.dst = n
+	}
+
+	// Strictly "true" or "false"; strconv.ParseBool would also accept
+	// 1, t, T, TRUE, etc., which would become part of the API contract.
+	if q.Has("completed") {
+		switch q.Get("completed") {
+		case "true":
+			params.Completed = new(true)
+		case "false":
+			params.Completed = new(false)
+		default:
+			return todo.ListParams{}, badRequest(`Query parameter "completed" must be true or false.`)
+		}
 	}
 	return params, nil
 }

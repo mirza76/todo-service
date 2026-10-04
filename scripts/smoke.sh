@@ -107,9 +107,18 @@ request PUT "/todos/$id" '{"title":"smoke test todo (done)","completed":true}'
 expect_status 200 "replace"
 expect_jq '.completed == true and .updated_at > .created_at' "replace updates fields and updated_at"
 
+request PATCH "/todos/$id" '{"completed":false}'
+expect_status 200 "partial update (PATCH)"
+expect_jq '.completed == false and .title == "smoke test todo (done)"' "PATCH changes only the given field"
+request PATCH "/todos/$id" '{"completed":true}'
+
 request GET "/todos?limit=5&offset=0"
 expect_status 200 "list"
 expect_jq '.limit == 5 and .offset == 0 and (.items | type == "array") and .total >= 1' "list envelope with pagination"
+
+request GET "/todos?completed=true&limit=100"
+expect_status 200 "list filtered by completed=true"
+expect_jq '(.items | length) >= 1 and all(.items[]; .completed == true)' "filter returns only completed todos"
 
 step "Error handling"
 request POST /todos '{"title":""}'
@@ -121,6 +130,8 @@ request GET /todos/00000000-0000-0000-0000-000000000000
 expect_status 404 "unknown id"
 request GET "/todos?limit=1000"
 expect_status 422 "limit above maximum"
+request PATCH "/todos/$id" '{"title":null}'
+expect_status 422 "PATCH null title rejected"
 
 step "Consistency across replicas (shared PostgreSQL)"
 request POST /todos '{"title":"consistency probe"}'

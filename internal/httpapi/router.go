@@ -29,6 +29,7 @@ func NewHandler(cfg Config) http.Handler {
 	mux.HandleFunc("POST /todos", h.create)
 	mux.HandleFunc("GET /todos/{id}", h.get)
 	mux.HandleFunc("PUT /todos/{id}", h.replace)
+	mux.HandleFunc("PATCH /todos/{id}", h.update)
 	mux.HandleFunc("DELETE /todos/{id}", h.delete)
 	mux.HandleFunc("GET /livez", cfg.Liveness)
 	mux.HandleFunc("GET /readyz", cfg.Readiness)
