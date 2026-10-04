@@ -42,7 +42,7 @@ test: ## Run unit tests with the race detector
 
 .PHONY: cover
 cover: ## Run tests and print a coverage summary
-	go test -race -count=1 -covermode=atomic -coverprofile=$(COVER_FILE) ./...
+	go test -race -count=1 -covermode=atomic -coverpkg=./... -coverprofile=$(COVER_FILE) ./...
 	go tool cover -func=$(COVER_FILE) | tail -n 1
 
 .PHONY: check
