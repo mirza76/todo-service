@@ -32,6 +32,7 @@ requests.
 | **API** | RESTful CRUD on `/todos` with full (PUT) and partial (PATCH, JSON Merge Patch) updates, filtering, offset pagination, correct status codes, `Location` on create, [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `application/problem+json` errors with per-field validation details |
 | **Architecture** | Layered / hexagonal: HTTP → service → `Repository` port → adapters (in-memory, PostgreSQL). Standard library router, minimal dependencies |
 | **Data** | PostgreSQL shared by all replicas; embedded migrations made safe for concurrent replica startup with an advisory lock |
+| **Observability** | Structured JSON logs (`log/slog`), one access-log line per request, `X-Request-ID` correlation across response headers, error bodies, and every log line |
 | **Resilience** | Graceful shutdown with a readiness drain (measured: **0 failed requests** during rolling restarts), DB connect retry with exponential backoff, per-request timeouts, panic recovery, server timeouts |
 | **Health** | `/livez` (process only) and `/readyz` (dependencies + shutdown state), wired to startup, liveness, and readiness probes |
 | **Docker** | Multi-stage build, static binary, distroless non-root image (~21 MB), BuildKit caching |
@@ -49,7 +50,7 @@ flowchart LR
     client([HTTP client]) --> mw
 
     subgraph httpapi [internal/httpapi]
-        mw[Middleware<br/>access log · panic recovery · timeout] --> h[Handlers<br/>decode · validate · encode]
+        mw[Middleware<br/>request ID · access log · panic recovery · timeout] --> h[Handlers<br/>decode · validate · encode]
     end
 
     h --> svc[internal/service<br/>use cases, IDs, clock, paging rules]
@@ -75,6 +76,7 @@ internal/
   service/               Use cases: create, get, list, replace, delete
   httpapi/               Routing, handlers, DTOs, JSON decoding, problem+json, middleware
   health/                Liveness and readiness handlers
+  requestid/             X-Request-ID middleware and log correlation
   storage/
     memory/              In-memory adapter (local development, tests)
     postgres/            PostgreSQL adapter + embedded SQL migrations
@@ -209,8 +211,22 @@ Every error, including unknown routes and wrong methods, uses
   "status": 422,
   "detail": "The request contains invalid fields.",
   "instance": "/todos",
-  "errors": [ { "field": "title", "message": "must not be empty" } ]
+  "errors": [ { "field": "title", "message": "must not be empty" } ],
+  "request_id": "0f5f1d0e-8b1c-4a8e-9a43-3c3f0b9a7d21"
 }
+```
+
+### Request IDs
+
+Every response carries an `X-Request-ID` header, and every error body
+includes the same value as `request_id`. If a client sends a well-formed
+`X-Request-ID` (1–128 characters of `A–Z a–z 0–9 - _ . :`), it is reused so a
+request can be traced across services. Otherwise a new UUID is generated. The
+ID is added to **every log line** written while handling the request (access
+log, errors, panics), so one ID finds everything about a request:
+
+```bash
+kubectl --context kind-todo -n todo logs -l app.kubernetes.io/name=todo-api | grep '"request_id":"<id>"'
 ```
 
 | Status | When |
@@ -558,8 +574,8 @@ order:
 
 - **Optimistic concurrency:** a `version` field with `ETag` / `If-Match`
   returning `412 Precondition Failed` on conflicting writes
-- **Observability:** request IDs in logs, Prometheus `/metrics` (rate, errors,
-  duration), OpenTelemetry tracing
+- **Observability:** Prometheus `/metrics` (rate, errors, duration) and
+  OpenTelemetry tracing
 - **CI/CD:** GitHub Actions for lint, tests, image build, vulnerability scan
   (Trivy, `govulncheck`), and the kind end-to-end test
 - **NetworkPolicy** limiting PostgreSQL ingress to API pods

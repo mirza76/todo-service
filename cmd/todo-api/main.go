@@ -21,6 +21,7 @@ import (
 	"github.com/mirza76/todo-service/internal/config"
 	"github.com/mirza76/todo-service/internal/health"
 	"github.com/mirza76/todo-service/internal/httpapi"
+	"github.com/mirza76/todo-service/internal/requestid"
 	"github.com/mirza76/todo-service/internal/service"
 	"github.com/mirza76/todo-service/internal/storage/memory"
 	"github.com/mirza76/todo-service/internal/storage/postgres"
@@ -51,7 +52,9 @@ func run() error {
 		return err
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	logger := slog.New(requestid.NewLogHandler(
+		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}),
+	))
 	logger.Info("starting todo-api",
 		slog.String("version", version),
 		slog.String("storage", cfg.Storage),

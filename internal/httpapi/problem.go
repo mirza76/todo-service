@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/mirza76/todo-service/internal/requestid"
 	"github.com/mirza76/todo-service/internal/todo"
 )
 
@@ -18,6 +19,9 @@ type problem struct {
 	Detail   string              `json:"detail,omitempty"`
 	Instance string              `json:"instance,omitempty"`
 	Errors   []fieldErrorPayload `json:"errors,omitempty"`
+	// RequestID is an RFC 9457 extension member: clients can quote it when
+	// reporting a problem, and it matches the server's log lines.
+	RequestID string `json:"request_id,omitempty"`
 }
 
 type fieldErrorPayload struct {
@@ -42,6 +46,7 @@ func writeProblem(w http.ResponseWriter, r *http.Request, p problem) {
 	p.Type = "about:blank"
 	p.Title = http.StatusText(p.Status)
 	p.Instance = r.URL.Path
+	p.RequestID = requestid.FromContext(r.Context())
 	writeBody(w, p.Status, "application/problem+json", p)
 }
 

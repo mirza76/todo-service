@@ -41,12 +41,13 @@ type listJSON struct {
 }
 
 type problemJSON struct {
-	Type     string `json:"type"`
-	Title    string `json:"title"`
-	Status   int    `json:"status"`
-	Detail   string `json:"detail"`
-	Instance string `json:"instance"`
-	Errors   []struct {
+	Type      string `json:"type"`
+	Title     string `json:"title"`
+	Status    int    `json:"status"`
+	Detail    string `json:"detail"`
+	Instance  string `json:"instance"`
+	RequestID string `json:"request_id"`
+	Errors    []struct {
 		Field   string `json:"field"`
 		Message string `json:"message"`
 	} `json:"errors"`
@@ -129,6 +130,9 @@ func assertProblem(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int,
 	}
 	if wantDetail != "" && !strings.Contains(p.Detail, wantDetail) {
 		t.Errorf("detail = %q, want it to contain %q", p.Detail, wantDetail)
+	}
+	if hdr := rec.Header().Get("X-Request-ID"); p.RequestID == "" || p.RequestID != hdr {
+		t.Errorf("request_id = %q, want non-empty and equal to X-Request-ID header %q", p.RequestID, hdr)
 	}
 	return p
 }
@@ -513,6 +517,27 @@ func TestMethodNotAllowed(t *testing.T) {
 	assertProblem(t, rec, http.StatusMethodNotAllowed, "method is not allowed")
 	if allow := rec.Header().Get("Allow"); !strings.Contains(allow, "GET") || !strings.Contains(allow, "POST") {
 		t.Errorf("Allow = %q, want it to list GET and POST", allow)
+	}
+}
+
+func TestRequestIDPropagation(t *testing.T) {
+	h := newRealHandler()
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/todos/"+uuid.NewString(), http.NoBody)
+	r.Header.Set("X-Request-ID", "upstream-trace-42")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	if got := rec.Header().Get("X-Request-ID"); got != "upstream-trace-42" {
+		t.Errorf("X-Request-ID = %q, want the incoming id echoed", got)
+	}
+	if p := assertProblem(t, rec, http.StatusNotFound, ""); p.RequestID != "upstream-trace-42" {
+		t.Errorf("problem request_id = %q, want upstream-trace-42", p.RequestID)
+	}
+
+	// Successful responses carry the header too.
+	if ok := do(t, h, request{method: http.MethodGet, path: "/todos"}); ok.Header().Get("X-Request-ID") == "" {
+		t.Error("X-Request-ID missing on successful response")
 	}
 }
 

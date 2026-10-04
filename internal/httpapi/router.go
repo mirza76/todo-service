@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/mirza76/todo-service/internal/requestid"
 )
 
 // Config holds the dependencies and settings for the HTTP handler.
@@ -34,12 +36,14 @@ func NewHandler(cfg Config) http.Handler {
 	mux.HandleFunc("GET /livez", cfg.Liveness)
 	mux.HandleFunc("GET /readyz", cfg.Readiness)
 
-	// Middleware is applied inside-out: accessLog sees the final status,
-	// including 500s produced by recoverPanic.
+	// Middleware is applied inside-out. requestid is outermost so every log
+	// line (including the access log) carries the ID; accessLog sees the
+	// final status, including 500s produced by recoverPanic.
 	handler := problemFallback(mux)
 	handler = requestTimeout(cfg.RequestTimeout, handler)
 	handler = recoverPanic(cfg.Logger, handler)
 	handler = accessLog(cfg.Logger, handler)
+	handler = requestid.Middleware(handler)
 	return handler
 }
 
