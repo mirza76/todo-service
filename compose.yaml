@@ -1,0 +1,41 @@
+# Local development stack: the API plus PostgreSQL.
+#   docker compose up --build
+# The credentials below are for local development only; Kubernetes reads
+# them from a Secret instead.
+name: todo-service
+
+services:
+  api:
+    build: .
+    image: todo-api:latest
+    ports:
+      - "8080:8080"
+    environment:
+      STORAGE_DRIVER: postgres
+      DB_HOST: db
+      DB_NAME: todos
+      DB_USER: todo
+      DB_PASSWORD: devpass
+      LOG_LEVEL: debug
+      SHUTDOWN_DELAY: 0s
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: todos
+      POSTGRES_USER: todo
+      POSTGRES_PASSWORD: devpass
+    volumes:
+      - db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U todo -d todos"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  db-data:

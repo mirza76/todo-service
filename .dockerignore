@@ -1,0 +1,9 @@
+# Allow-list: send only what the build needs to the Docker daemon.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+
+# Never ship tests inside the build context.
+**/*_test.go

@@ -56,5 +56,17 @@ cover: ## Run tests and print a coverage summary
 	go test -race -count=1 -covermode=atomic -coverpkg=./... -coverprofile=$(COVER_FILE) ./...
 	go tool cover -func=$(COVER_FILE) | tail -n 1
 
+## ---------- Docker ----------
+
+IMAGE ?= todo-api:$(VERSION)
+
+.PHONY: docker-build
+docker-build: ## Build the container image
+	docker buildx build --load --build-arg VERSION=$(VERSION) -t $(IMAGE) -t todo-api:latest .
+
+.PHONY: docker-run
+docker-run: ## Run the image locally on :8080 (in-memory storage)
+	docker run --rm -p 8080:8080 --name todo-api $(IMAGE)
+
 .PHONY: check
 check: lint test ## Run everything CI runs (lint + test)
