@@ -1,0 +1,42 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose     # HTTP response bodies are closed
+    - contextcheck  # context is propagated, not replaced
+    - errorlint     # errors compared with errors.Is / errors.As
+    - gocritic      # broad set of style & correctness checks
+    - gosec         # security issues
+    - misspell
+    - nilerr        # returning nil when an error was checked
+    - noctx         # HTTP requests carry a context
+    - revive        # idiomatic Go style
+    - sloglint      # consistent structured logging
+    - unconvert
+    - unparam
+  settings:
+    sloglint:
+      kv-only: false
+      attr-only: false
+      no-global: all
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/mirza76/todo-service
