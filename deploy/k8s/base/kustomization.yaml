@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Environment-agnostic application manifests. Overlays supply the image tag,
+# the "todo-db" Secret (username, password), and the database.
+
+namespace: todo
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: todo-service
+      app.kubernetes.io/managed-by: kustomize
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - deployment.yaml
+  - service.yaml
+  - pdb.yaml
+
+# Generated with a content-hash suffix: changing any value produces a new
+# ConfigMap name, which triggers a rolling restart automatically.
+configMapGenerator:
+  - name: todo-api-config
+    literals:
+      - PORT=8080
+      - LOG_LEVEL=info
+      - STORAGE_DRIVER=postgres
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=todos
+      - DB_SSLMODE=disable
+      - DB_MAX_CONNS=10
+      - DB_CONNECT_TIMEOUT=30s
+      - HTTP_REQUEST_TIMEOUT=5s
+      - SHUTDOWN_DELAY=5s
+      - SHUTDOWN_TIMEOUT=15s

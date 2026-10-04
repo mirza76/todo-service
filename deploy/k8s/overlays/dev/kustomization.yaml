@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Local development on kind: app + in-cluster PostgreSQL.
+
+namespace: todo
+
+resources:
+  - ../../base
+  - nodeport-service.yaml
+
+components:
+  - ../../components/postgres
+
+images:
+  - name: todo-api
+    newTag: dev
+
+configMapGenerator:
+  - name: todo-api-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=debug
+
+# DEV ONLY. Real environments must source this Secret from a secret manager
+# (e.g. External Secrets Operator, Sealed Secrets) - never commit real
+# credentials.
+secretGenerator:
+  - name: todo-db
+    literals:
+      - username=todo
+      - password=dev-only-insecure-password

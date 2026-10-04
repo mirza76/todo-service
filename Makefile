@@ -68,5 +68,40 @@ docker-build: ## Build the container image
 docker-run: ## Run the image locally on :8080 (in-memory storage)
 	docker run --rm -p 8080:8080 --name todo-api $(IMAGE)
 
+## ---------- Kubernetes (kind) ----------
+
+KIND_CLUSTER := todo
+K8S_OVERLAY  := deploy/k8s/overlays/dev
+KUBECTL      := kubectl --context kind-$(KIND_CLUSTER)
+
+.PHONY: kind-up
+kind-up: ## Create the local kind cluster (1 control plane + 2 workers)
+	kind get clusters | grep -qx $(KIND_CLUSTER) || kind create cluster --config deploy/kind/cluster.yaml
+
+.PHONY: kind-load
+kind-load: docker-build ## Build the image and load it into kind as todo-api:dev
+	docker tag $(IMAGE) todo-api:dev
+	kind load docker-image todo-api:dev --name $(KIND_CLUSTER)
+
+.PHONY: deploy
+deploy: kind-load ## Build, load, and deploy to kind; waits for rollout
+	$(KUBECTL) apply -k $(K8S_OVERLAY)
+	$(KUBECTL) -n todo rollout restart deployment/todo-api
+	$(KUBECTL) -n todo rollout status statefulset/postgres --timeout=180s
+	$(KUBECTL) -n todo rollout status deployment/todo-api --timeout=180s
+
+.PHONY: smoke
+smoke: ## Run the end-to-end smoke test against the kind deployment
+	KUBECTL="$(KUBECTL)" ./scripts/smoke.sh
+
+.PHONY: undeploy
+undeploy: ## Remove the app (and its data) from kind
+	$(KUBECTL) delete -k $(K8S_OVERLAY) --ignore-not-found
+	$(KUBECTL) -n todo delete pvc --all --ignore-not-found
+
+.PHONY: kind-down
+kind-down: ## Delete the kind cluster
+	kind delete cluster --name $(KIND_CLUSTER)
+
 .PHONY: check
 check: lint test ## Run everything CI runs (lint + test)

@@ -1,0 +1,17 @@
+# Dev-only access path: kind maps host port 8080 to this NodePort (see
+# deploy/kind/cluster.yaml), so the API is reachable at localhost:8080 with
+# real kube-proxy load balancing across replicas. The ClusterIP Service in
+# base remains the in-cluster entry point.
+apiVersion: v1
+kind: Service
+metadata:
+  name: todo-api-nodeport
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: todo-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30080

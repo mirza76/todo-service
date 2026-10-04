@@ -1,0 +1,11 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: todo-api
+spec:
+  # Voluntary disruptions (node drains, cluster upgrades) may evict at most
+  # one replica at a time.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: todo-api

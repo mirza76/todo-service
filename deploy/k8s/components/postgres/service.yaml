@@ -1,0 +1,14 @@
+# Headless Service: gives the StatefulSet pod a stable DNS name
+# ("postgres.todo.svc") without load-balancing.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
