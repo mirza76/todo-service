@@ -38,7 +38,7 @@ requests.
 | **Observability** | Prometheus metrics on a separate port (per-route rate, errors, latency histogram, in-flight, Go runtime, build info), structured JSON logs, `X-Request-ID` correlation across response headers, error bodies, and every log line |
 | **Resilience** | Graceful shutdown with a readiness drain (measured: **0 failed requests** during rolling restarts), DB connect retry with exponential backoff, per-request timeouts, panic recovery, server timeouts |
 | **Health** | `/livez` (process only) and `/readyz` (dependencies + shutdown state), wired to startup, liveness, and readiness probes |
-| **Docker** | Multi-stage build, static binary, distroless non-root image (~21 MB), BuildKit caching |
+| **Docker** | Multi-stage build, static binary, distroless non-root image (~27 MB), BuildKit caching |
 | **Kubernetes** | 2 replicas spread across nodes, requests/limits, PodDisruptionBudget, ConfigMap + Secret, `restricted` Pod Security Standard, read-only root filesystem, no service-account token |
 | **CI** | GitHub Actions: lint, race-enabled tests incl. PostgreSQL integration, `govulncheck`, Docker build + smoke test; actions pinned to commit SHAs, read-only token |
 | **Quality** | Unit, handler, and integration tests (real PostgreSQL via Testcontainers), one shared contract suite for every storage adapter, race detector, 17 linters, end-to-end smoke test with failure drills |
@@ -426,7 +426,7 @@ The [Dockerfile](Dockerfile) has two stages:
    rebuilds fast, and the build runs natively on the host platform while
    cross-compiling for the target.
 2. **Runtime:** `gcr.io/distroless/static-debian13:nonroot`, which contains no
-   shell or package manager and runs as UID 65532. The final image is ~21 MB.
+   shell or package manager and runs as UID 65532. The final image is ~27 MB.
 
 The image exposes `8080` (API and probes) and `9090` (metrics). The binary is PID 1 (exec-form `ENTRYPOINT`), so it receives `SIGTERM`
 directly and shuts down gracefully.

@@ -85,8 +85,12 @@ kind-load: docker-build ## Build the image and load it into kind as todo-api:dev
 
 .PHONY: deploy
 deploy: kind-load ## Build, load, and deploy to kind; waits for rollout
-	$(KUBECTL) apply -k $(K8S_OVERLAY)
-	$(KUBECTL) -n todo rollout restart deployment/todo-api
+	@# The image tag (:dev) doesn't change between builds, so an existing
+	@# Deployment must be restarted to pick up the new image. A fresh one
+	@# already runs it.
+	@existed=$$($(KUBECTL) -n todo get deployment todo-api -o name 2>/dev/null); \
+	$(KUBECTL) apply -k $(K8S_OVERLAY) && \
+	if [ -n "$$existed" ]; then $(KUBECTL) -n todo rollout restart deployment/todo-api; fi
 	$(KUBECTL) -n todo rollout status statefulset/postgres --timeout=180s
 	$(KUBECTL) -n todo rollout status deployment/todo-api --timeout=180s
 
