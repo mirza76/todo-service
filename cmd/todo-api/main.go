@@ -23,6 +23,7 @@ import (
 	"github.com/mirza76/todo-service/internal/httpapi"
 	"github.com/mirza76/todo-service/internal/service"
 	"github.com/mirza76/todo-service/internal/storage/memory"
+	"github.com/mirza76/todo-service/internal/storage/postgres"
 	"github.com/mirza76/todo-service/internal/todo"
 )
 
@@ -57,7 +58,7 @@ func run() error {
 		slog.Int("port", cfg.Port),
 	)
 
-	store, err := openStorage(cfg)
+	store, err := openStorage(ctx, cfg, logger)
 	if err != nil {
 		return fmt.Errorf("open storage: %w", err)
 	}
@@ -98,12 +99,32 @@ type storage struct {
 	close  func()
 }
 
-func openStorage(cfg config.Config) (storage, error) {
+func openStorage(ctx context.Context, cfg config.Config, logger *slog.Logger) (storage, error) {
 	switch cfg.Storage {
 	case config.StorageMemory:
+		logger.Warn("using in-memory storage: data is not persisted or shared between replicas")
 		return storage{repo: memory.New(), close: func() {}}, nil
+
+	case config.StoragePostgres:
+		pool, err := postgres.Connect(ctx, cfg.Postgres, logger)
+		if err != nil {
+			return storage{}, err
+		}
+		applied, err := postgres.Migrate(ctx, pool)
+		if err != nil {
+			pool.Close()
+			return storage{}, fmt.Errorf("migrate: %w", err)
+		}
+		logger.Info("postgres ready", slog.Any("migrations_applied", applied))
+		return storage{
+			repo:   postgres.New(pool),
+			checks: []health.NamedCheck{{Name: "postgres", Check: pool.Ping}},
+			close:  pool.Close,
+		}, nil
+
 	default:
-		return storage{}, fmt.Errorf("storage driver %q is not supported yet", cfg.Storage)
+		// Unreachable: config.Load validates the driver.
+		return storage{}, fmt.Errorf("unknown storage driver %q", cfg.Storage)
 	}
 }
 

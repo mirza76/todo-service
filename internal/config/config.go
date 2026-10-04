@@ -60,6 +60,12 @@ type PostgresConfig struct {
 	User     string
 	Password string
 	SSLMode  string
+	// MaxConns caps the connection pool size per replica.
+	MaxConns int
+	// ConnectTimeout bounds how long startup waits for the database to
+	// become reachable before giving up and letting the orchestrator restart
+	// the process.
+	ConnectTimeout time.Duration
 }
 
 // LookupFunc matches os.LookupEnv; injecting it keeps Load testable.
@@ -92,12 +98,14 @@ func Load(lookup LookupFunc) (Config, error) {
 			Timeout: p.duration("SHUTDOWN_TIMEOUT", 15*time.Second),
 		},
 		Postgres: PostgresConfig{
-			Host:     p.string("DB_HOST", ""),
-			Port:     p.int("DB_PORT", 5432),
-			Database: p.string("DB_NAME", ""),
-			User:     p.string("DB_USER", ""),
-			Password: p.string("DB_PASSWORD", ""),
-			SSLMode:  p.string("DB_SSLMODE", "disable"),
+			Host:           p.string("DB_HOST", ""),
+			Port:           p.int("DB_PORT", 5432),
+			Database:       p.string("DB_NAME", ""),
+			User:           p.string("DB_USER", ""),
+			Password:       p.string("DB_PASSWORD", ""),
+			SSLMode:        p.string("DB_SSLMODE", "disable"),
+			MaxConns:       p.int("DB_MAX_CONNS", 10),
+			ConnectTimeout: p.duration("DB_CONNECT_TIMEOUT", 30*time.Second),
 		},
 	}
 
@@ -168,6 +176,12 @@ func (p PostgresConfig) validate() []error {
 	}
 	if p.Port < 1 || p.Port > 65535 {
 		errs = append(errs, fmt.Errorf("DB_PORT must be between 1 and 65535, got %d", p.Port))
+	}
+	if p.MaxConns < 1 {
+		errs = append(errs, fmt.Errorf("DB_MAX_CONNS must be positive, got %d", p.MaxConns))
+	}
+	if p.ConnectTimeout <= 0 {
+		errs = append(errs, fmt.Errorf("DB_CONNECT_TIMEOUT must be positive, got %s", p.ConnectTimeout))
 	}
 	switch p.SSLMode {
 	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":

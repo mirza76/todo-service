@@ -67,8 +67,9 @@ func TestLoad_Overrides(t *testing.T) {
 	if cfg.Shutdown.Delay != 0 {
 		t.Errorf("Shutdown.Delay = %s, want 0s", cfg.Shutdown.Delay)
 	}
-	if cfg.Postgres.Host != "db" || cfg.Postgres.Port != 5432 || cfg.Postgres.SSLMode != "disable" {
-		t.Errorf("Postgres = %+v, want host=db port=5432 sslmode=disable", cfg.Postgres)
+	if cfg.Postgres.Host != "db" || cfg.Postgres.Port != 5432 || cfg.Postgres.SSLMode != "disable" ||
+		cfg.Postgres.MaxConns != 10 || cfg.Postgres.ConnectTimeout != 30*time.Second {
+		t.Errorf("Postgres = %+v, want host=db port=5432 sslmode=disable maxconns=10 connecttimeout=30s", cfg.Postgres)
 	}
 }
 
@@ -128,6 +129,14 @@ func TestLoad_Invalid(t *testing.T) {
 				"DB_USER": "u", "DB_PASSWORD": "p", "DB_SSLMODE": "maybe",
 			},
 			wantErr: []string{"not a valid PostgreSQL sslmode"},
+		},
+		{
+			name: "postgres with invalid pool settings",
+			vars: map[string]string{
+				"STORAGE_DRIVER": "postgres", "DB_HOST": "h", "DB_NAME": "n", "DB_USER": "u",
+				"DB_PASSWORD": "p", "DB_MAX_CONNS": "0", "DB_CONNECT_TIMEOUT": "0s",
+			},
+			wantErr: []string{"DB_MAX_CONNS must be positive", "DB_CONNECT_TIMEOUT must be positive"},
 		},
 		{
 			name:    "multiple problems are reported together",
