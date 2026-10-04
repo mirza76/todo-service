@@ -44,8 +44,10 @@ func (rec *responseRecorder) Unwrap() http.ResponseWriter {
 	return rec.ResponseWriter
 }
 
-// accessLog emits one structured log line per request. Successful health
-// probes are logged at debug level so they don't drown out real traffic.
+// accessLog emits one structured log line per request. Health probes are
+// logged at debug level: they arrive every few seconds and would drown out
+// real traffic, and a 503 from /readyz during shutdown is expected, not an
+// error. Failed readiness checks are logged by the health package itself.
 func accessLog(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -54,10 +56,10 @@ func accessLog(logger *slog.Logger, next http.Handler) http.Handler {
 
 		level := slog.LevelInfo
 		switch {
+		case r.URL.Path == "/livez" || r.URL.Path == "/readyz":
+			level = slog.LevelDebug
 		case rec.status >= http.StatusInternalServerError:
 			level = slog.LevelError
-		case (r.URL.Path == "/livez" || r.URL.Path == "/readyz") && rec.status < http.StatusBadRequest:
-			level = slog.LevelDebug
 		}
 
 		logger.LogAttrs(r.Context(), level, "http request",
@@ -65,7 +67,7 @@ func accessLog(logger *slog.Logger, next http.Handler) http.Handler {
 			slog.String("path", r.URL.Path),
 			slog.Int("status", rec.status),
 			slog.Int("bytes", rec.bytes),
-			slog.Duration("duration", time.Since(start)),
+			slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
 			slog.String("remote_addr", r.RemoteAddr),
 			slog.String("user_agent", r.UserAgent()),
 		)
