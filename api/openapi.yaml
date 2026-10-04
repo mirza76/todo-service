@@ -1,0 +1,521 @@
+openapi: 3.1.0
+
+info:
+  title: todo-service
+  version: 1.0.0
+  summary: ToDo REST microservice
+  description: |
+    CRUD API for todo items.
+
+    - All bodies are JSON. Errors use RFC 9457 Problem Details
+      (`application/problem+json`).
+    - Every response carries an `X-Request-ID` header. Error bodies repeat it
+      as `request_id`.
+    - `400` means the request could not be parsed; `422` means it parsed but
+      broke a validation rule.
+
+servers:
+  - url: http://localhost:8080
+    description: Local (go run, Docker, Compose, or kind)
+
+tags:
+  - name: todos
+    description: Todo items
+  - name: operations
+    description: Health probes and API description
+
+paths:
+  /todos:
+    get:
+      tags: [todos]
+      operationId: listTodos
+      summary: List todos
+      description: |
+        Returns one page of todos ordered by `created_at`, then `id`.
+        `total` counts all todos matching the filter.
+      parameters:
+        - $ref: "#/components/parameters/RequestID"
+        - name: completed
+          in: query
+          description: Only return todos with this status. Exactly `true` or `false`.
+          schema:
+            type: boolean
+        - name: limit
+          in: query
+          description: Page size.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          description: Number of todos to skip.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: A page of todos.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TodoList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+    post:
+      tags: [todos]
+      operationId: createTodo
+      summary: Create a todo
+      parameters:
+        - $ref: "#/components/parameters/RequestID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTodo"
+            example:
+              title: Buy milk
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              description: URL of the new todo.
+              schema:
+                type: string
+                example: /todos/01a108e6-e9ad-74fd-bbc8-8b4c524ee2ca
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Todo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/ContentTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /todos/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TodoID"
+      - $ref: "#/components/parameters/RequestID"
+
+    get:
+      tags: [todos]
+      operationId: getTodo
+      summary: Get a todo
+      responses:
+        "200":
+          description: The todo.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Todo"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+    put:
+      tags: [todos]
+      operationId: replaceTodo
+      summary: Replace a todo
+      description: Full replacement. Every client-controlled field is required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplaceTodo"
+            example:
+              title: Buy oat milk
+              completed: true
+      responses:
+        "200":
+          description: The replaced todo.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Todo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/ContentTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+    patch:
+      tags: [todos]
+      operationId: updateTodo
+      summary: Partially update a todo
+      description: |
+        JSON Merge Patch (RFC 7396). Absent fields are left unchanged.
+        - `null` would remove a field. Neither field can be removed, so
+          `null` is rejected with `422`.
+        - An empty object is a no-op and does not change `updated_at`.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: "#/components/schemas/TodoPatch"
+            example:
+              completed: true
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TodoPatch"
+      responses:
+        "200":
+          description: The updated todo.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Todo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/ContentTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+    delete:
+      tags: [todos]
+      operationId: deleteTodo
+      summary: Delete a todo
+      responses:
+        "204":
+          description: Deleted.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /livez:
+    get:
+      tags: [operations]
+      operationId: liveness
+      summary: Liveness probe
+      description: Reports whether the process can serve. Does not check dependencies.
+      responses:
+        "200":
+          description: Alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /readyz:
+    get:
+      tags: [operations]
+      operationId: readiness
+      summary: Readiness probe
+      description: |
+        Reports whether the instance should receive traffic: all dependency
+        checks pass and shutdown has not begun.
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "503":
+          description: A dependency check failed, or the instance is shutting down.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /openapi.yaml:
+    get:
+      tags: [operations]
+      operationId: getOpenAPISpec
+      summary: This OpenAPI document
+      responses:
+        "200":
+          description: The OpenAPI document.
+          content:
+            application/yaml:
+              schema:
+                type: object
+                description: An OpenAPI 3.1 document.
+
+components:
+  parameters:
+    TodoID:
+      name: id
+      in: path
+      required: true
+      description: Todo ID (UUIDv7). A malformed ID returns `404`.
+      schema:
+        type: string
+        format: uuid
+    RequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: |
+        Optional correlation ID, reused if it is 1–128 characters of
+        `[A-Za-z0-9._:-]`. Otherwise the server generates one.
+      schema:
+        type: string
+        maxLength: 128
+
+  headers:
+    XRequestID:
+      description: Correlation ID for this request; also present in server logs.
+      schema:
+        type: string
+
+  schemas:
+    Todo:
+      type: object
+      additionalProperties: false
+      required: [id, title, completed, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Server-generated UUIDv7.
+          examples: [01a108e6-e9ad-74fd-bbc8-8b4c524ee2ca]
+        title:
+          $ref: "#/components/schemas/Title"
+        completed:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+          description: Creation time (UTC). Never changes.
+        updated_at:
+          type: string
+          format: date-time
+          description: Time of the last change (UTC).
+
+    Title:
+      type: string
+      minLength: 1
+      maxLength: 200
+      description: |
+        Surrounding whitespace is trimmed before validation. After trimming,
+        the title must be 1–200 characters with no control characters.
+      examples: [Buy milk]
+
+    CreateTodo:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title:
+          $ref: "#/components/schemas/Title"
+        completed:
+          type: boolean
+          default: false
+
+    ReplaceTodo:
+      type: object
+      additionalProperties: false
+      required: [title, completed]
+      properties:
+        title:
+          $ref: "#/components/schemas/Title"
+        completed:
+          type: boolean
+
+    TodoPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          $ref: "#/components/schemas/Title"
+        completed:
+          type: boolean
+
+    TodoList:
+      type: object
+      additionalProperties: false
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Todo"
+        total:
+          type: integer
+          minimum: 0
+          description: Number of todos matching the filter.
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          examples: [about:blank]
+        title:
+          type: string
+          examples: [Unprocessable Entity]
+        status:
+          type: integer
+          examples: [422]
+        detail:
+          type: string
+          examples: [The request contains invalid fields.]
+        instance:
+          type: string
+          examples: [/todos]
+        request_id:
+          type: string
+          description: Same value as the X-Request-ID response header.
+        errors:
+          type: array
+          description: Present on 422 responses; one entry per invalid field.
+          items:
+            $ref: "#/components/schemas/FieldError"
+
+    FieldError:
+      type: object
+      additionalProperties: false
+      required: [field, message]
+      properties:
+        field:
+          type: string
+          examples: [title]
+        message:
+          type: string
+          examples: [must not be empty]
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable, shutting_down]
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [ok, fail]
+
+  responses:
+    BadRequest:
+      description: The request could not be parsed.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: The todo does not exist (or the ID is malformed).
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ContentTooLarge:
+      description: The request body exceeds the configured limit.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    UnsupportedMediaType:
+      description: The Content-Type is not supported for this operation.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    UnprocessableEntity:
+      description: The request is well-formed but breaks a validation rule.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InternalServerError:
+      description: Unexpected failure. Details are logged, not returned.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ServiceUnavailable:
+      description: The request exceeded the processing deadline.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"

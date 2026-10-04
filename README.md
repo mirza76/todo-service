@@ -72,6 +72,7 @@ place where concrete types are wired together.
 ### Project layout
 
 ```
+api/                     OpenAPI 3.1 spec (embedded in the binary, served at /openapi.yaml)
 cmd/todo-api/            Entry point: config, wiring, server lifecycle, graceful shutdown
 internal/
   config/                Environment configuration, validated at startup (fail fast)
@@ -122,6 +123,12 @@ flowchart TB
 
 ## API specification
 
+The complete contract is in **[`api/openapi.yaml`](api/openapi.yaml)** (OpenAPI 3.1).
+The running service also serves it at `GET /openapi.yaml`, so you can load
+`http://localhost:8080/openapi.yaml` into Swagger UI, Postman, or a client
+generator. A contract test validates real requests and responses against
+it in CI, so the document always matches the code.
+
 Base URL: `http://localhost:8080`. All request and response bodies are JSON.
 
 ### Endpoints
@@ -136,6 +143,7 @@ Base URL: `http://localhost:8080`. All request and response bodies are JSON.
 | `DELETE` | `/todos/{id}` | Delete a todo | `204 No Content` |
 | `GET` | `/livez` | Liveness probe | `200 OK` |
 | `GET` | `/readyz` | Readiness probe | `200 OK` / `503` |
+| `GET` | `/openapi.yaml` | OpenAPI 3.1 document | `200 OK` |
 
 ### Todo resource
 
@@ -436,6 +444,7 @@ make smoke       # end-to-end against the kind deployment
 | **Migrations** | Idempotent re-runs; 5 concurrent "replicas" migrating a fresh database: exactly one applies the schema |
 | **HTTP** | Every endpoint and every error status, including malformed JSON, oversized bodies, 405 with `Allow`, panics, timeouts, and that internal errors are not leaked |
 | **Lifecycle** | Graceful shutdown on a real TCP listener: readiness turns 503, in-flight requests complete, the listener closes |
+| **API contract** | [`openapi_test.go`](internal/httpapi/openapi_test.go) runs a full scenario through the real handler and validates every request and response (status, headers, body schema) against `api/openapi.yaml`. It also fails if any documented operation isn't exercised |
 | **End-to-end** | [`scripts/smoke.sh`](scripts/smoke.sh): CRUD, errors, consistency across replicas, and failure drills under continuous load |
 
 Example smoke test result on kind:

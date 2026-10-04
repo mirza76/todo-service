@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/mirza76/todo-service/api"
 	"github.com/mirza76/todo-service/internal/requestid"
 )
 
@@ -35,6 +36,7 @@ func NewHandler(cfg Config) http.Handler {
 	mux.HandleFunc("DELETE /todos/{id}", h.delete)
 	mux.HandleFunc("GET /livez", cfg.Liveness)
 	mux.HandleFunc("GET /readyz", cfg.Readiness)
+	mux.HandleFunc("GET /openapi.yaml", serveSpec)
 
 	// Middleware is applied inside-out. requestid is outermost so every log
 	// line (including the access log) carries the ID; accessLog sees the
@@ -45,6 +47,12 @@ func NewHandler(cfg Config) http.Handler {
 	handler = accessLog(cfg.Logger, handler)
 	handler = requestid.Middleware(handler)
 	return handler
+}
+
+// serveSpec serves the embedded OpenAPI document (media type per RFC 9512).
+func serveSpec(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/yaml")
+	_, _ = w.Write(api.Spec)
 }
 
 // problemFallback makes the mux's built-in 404 and 405 responses use the
