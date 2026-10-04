@@ -10,6 +10,12 @@ import (
 var (
 	ErrNotFound      = errors.New("todo not found")
 	ErrAlreadyExists = errors.New("todo already exists")
+	// ErrVersionConflict means the stored version differs from the version
+	// the caller expected: someone else changed the todo in the meantime.
+	ErrVersionConflict = errors.New("todo version conflict")
+	// ErrPreconditionFailed means the client's If-Match precondition does
+	// not match the current version.
+	ErrPreconditionFailed = errors.New("todo precondition failed")
 )
 
 // FieldError describes why a single input field is invalid.

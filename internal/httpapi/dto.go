@@ -127,6 +127,7 @@ type todoResponse struct {
 	ID        uuid.UUID `json:"id"`
 	Title     string    `json:"title"`
 	Completed bool      `json:"completed"`
+	Version   int64     `json:"version"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -136,6 +137,7 @@ func toTodoResponse(t todo.Todo) todoResponse {
 		ID:        t.ID,
 		Title:     t.Title,
 		Completed: t.Completed,
+		Version:   t.Version,
 		CreatedAt: t.CreatedAt,
 		UpdatedAt: t.UpdatedAt,
 	}

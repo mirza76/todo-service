@@ -34,6 +34,7 @@ requests.
 | **API** | RESTful CRUD on `/todos` with full (PUT) and partial (PATCH, JSON Merge Patch) updates, filtering, offset pagination, correct status codes, `Location` on create, [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `application/problem+json` errors with per-field validation details |
 | **Architecture** | Layered / hexagonal: HTTP → service → `Repository` port → adapters (in-memory, PostgreSQL). Standard library router, minimal dependencies |
 | **Data** | PostgreSQL shared by all replicas; embedded migrations made safe for concurrent replica startup with an advisory lock |
+| **Concurrency** | Optimistic concurrency control: `version` + `ETag` / `If-Match` (412 on stale writes), atomic compare-and-set in PostgreSQL, server-side retry so concurrent PATCHes never lose updates |
 | **Observability** | Structured JSON logs (`log/slog`), one access-log line per request, `X-Request-ID` correlation across response headers, error bodies, and every log line |
 | **Resilience** | Graceful shutdown with a readiness drain (measured: **0 failed requests** during rolling restarts), DB connect retry with exponential backoff, per-request timeouts, panic recovery, server timeouts |
 | **Health** | `/livez` (process only) and `/readyz` (dependencies + shutdown state), wired to startup, liveness, and readiness probes |
@@ -152,6 +153,7 @@ Base URL: `http://localhost:8080`. All request and response bodies are JSON.
   "id": "01a108e6-e9ad-74fd-bbc8-8b4c524ee2ca",
   "title": "Buy milk",
   "completed": false,
+  "version": 1,
   "created_at": "2026-10-05T09:30:00.123456Z",
   "updated_at": "2026-10-05T09:30:00.123456Z"
 }
@@ -162,6 +164,7 @@ Base URL: `http://localhost:8080`. All request and response bodies are JSON.
 | `id` | string (UUIDv7) | Server-generated, time-ordered |
 | `title` | string | Required. Surrounding whitespace is trimmed; 1–200 characters; no control characters |
 | `completed` | boolean | Optional on create (defaults to `false`), required on replace, optional on patch |
+| `version` | integer | Starts at 1, increases by one on every change. Also sent as the `ETag` header |
 | `created_at` | string (RFC 3339, UTC) | Set on create, never changes |
 | `updated_at` | string (RFC 3339, UTC) | Updated on every change |
 
@@ -227,6 +230,30 @@ Every error, including unknown routes and wrong methods, uses
 }
 ```
 
+### Optimistic concurrency (ETag / If-Match)
+
+Responses for a single todo include `ETag: "<version>"`. To make sure you
+don't overwrite someone else's change, send it back in `If-Match` on `PUT`,
+`PATCH`, or `DELETE`:
+
+```bash
+curl -i localhost:8080/todos/<id>                  # ... ETag: "3"
+curl -i -X PATCH localhost:8080/todos/<id> \
+  -H 'Content-Type: application/json' \
+  -H 'If-Match: "3"' \
+  -d '{"completed":true}'                          # 200, ETag: "4"
+# The same request again now gets 412 Precondition Failed: version 3 is stale.
+```
+
+- **With `If-Match`:** the write succeeds only if the todo is still at that
+  version, otherwise `412`. Weak (`W/"3"`) or malformed tags never match;
+  `*` matches any version.
+- **Without `If-Match`:** writes are unconditional, but still safe. If another
+  request changes the todo between the server's read and write, the server
+  re-applies the change to the fresh state (up to 3 attempts), so two
+  concurrent PATCHes of different fields both survive. If it keeps losing the
+  race, it returns `409 Conflict` and the client should retry.
+
 ### Request IDs
 
 Every response carries an `X-Request-ID` header, and every error body
@@ -244,6 +271,8 @@ kubectl --context kind-todo -n todo logs -l app.kubernetes.io/name=todo-api | gr
 |---|---|
 | `400 Bad Request` | The request can't be parsed: malformed JSON, body not a JSON object, wrong JSON type, unknown field, trailing data, non-integer `limit`/`offset`, `completed` not `true`/`false` |
 | `404 Not Found` | Unknown todo ID, malformed ID, or unknown route |
+| `409 Conflict` | The todo kept changing concurrently and the write could not be applied after retries. Retry |
+| `412 Precondition Failed` | `If-Match` does not match the todo's current `ETag` |
 | `405 Method Not Allowed` | Route exists but not for this method (includes an `Allow` header) |
 | `413 Content Too Large` | Body exceeds `HTTP_MAX_BODY_BYTES` |
 | `415 Unsupported Media Type` | `Content-Type` is not `application/json` (PATCH also accepts `application/merge-patch+json`) |
@@ -450,13 +479,16 @@ make smoke       # end-to-end against the kind deployment
 Example smoke test result on kind:
 
 ```
+== Optimistic concurrency (ETag / If-Match)
+  ✓ PATCH with stale If-Match rejected (412)
+  ✓ 30 concurrent PATCHes: 20 succeeded, version advanced by exactly 20 (no lost updates)
 == Drill A: delete one API pod under load
   ✓ pod deletion: 86 requests, 0 failed
 == Drill B: rolling restart under load
   ✓ rolling restart: 126 requests, 0 failed
 == Drill C: restart PostgreSQL, data must survive
   ✓ data intact after DB restart
-All 26 checks passed.
+All 30 checks passed.
 ```
 
 ---
@@ -535,13 +567,31 @@ schema behind.
 - **Errors never leak internals.** Unexpected errors are logged with full
   detail; the client gets a generic 500.
 
-### 6. Minimal dependencies, standard library first ([ADR 0001](docs/adr/0001-layered-architecture-and-stdlib.md))
+### 6. Optimistic concurrency across replicas ([ADR 0008](docs/adr/0008-optimistic-concurrency.md))
+
+With two replicas, two requests for the same todo can be processed at the
+same moment on different pods. A read-then-write would silently lose one of
+the updates. Each todo therefore has a `version`, and every write is an
+atomic compare-and-set in PostgreSQL
+(`UPDATE ... WHERE id = $1 AND version = $expected`), so exactly one of two
+racing writers wins. A contract test checks this with 10 concurrent writers
+against both storage adapters.
+
+- Clients can opt in to **`If-Match`** to reject stale writes with `412`.
+- Without it, the server **retries the read-modify-write**, so concurrent
+  partial updates merge instead of overwriting each other.
+
+**Measured on kind:** 30 concurrent PATCHes of one todo through the
+load-balanced Service produced only `200` and `409` responses, and the final
+version advanced by exactly the number of `200`s. No update was lost.
+
+### 7. Minimal dependencies, standard library first ([ADR 0001](docs/adr/0001-layered-architecture-and-stdlib.md))
 
 Routing uses Go's `net/http.ServeMux` (method and path-parameter patterns
 since Go 1.22), logging uses `log/slog`, and configuration uses `os.LookupEnv`.
 The only runtime dependencies are `pgx` (PostgreSQL) and `google/uuid`.
 
-### 7. IDs and pagination ([ADR 0006](docs/adr/0006-uuidv7-ids-and-offset-pagination.md))
+### 8. IDs and pagination ([ADR 0006](docs/adr/0006-uuidv7-ids-and-offset-pagination.md))
 
 - **IDs are UUIDv7:** unguessable like random UUIDs, but time-ordered, so they
   insert efficiently into B-tree indexes.
@@ -549,7 +599,7 @@ The only runtime dependencies are `pgx` (PostgreSQL) and `google/uuid`.
   `total`. The page and the total are read in one `REPEATABLE READ` snapshot,
   so they always agree.
 
-### 8. Kubernetes hardening ([ADR 0007](docs/adr/0007-kubernetes-layout-and-hardening.md))
+### 9. Kubernetes hardening ([ADR 0007](docs/adr/0007-kubernetes-layout-and-hardening.md))
 
 The namespace enforces the **`restricted` Pod Security Standard**, and both
 the API and PostgreSQL comply:
@@ -565,9 +615,10 @@ the API and PostgreSQL comply:
 
 ## Known limitations
 
-- **Concurrent updates are last-write-wins.** Two clients updating the same
-  todo at the same time (PUT or PATCH) won't detect each other's changes (see
-  future improvements: optimistic concurrency).
+- **Heavy contention on a single todo** can make unconditional writes give up
+  after 3 attempts with `409 Conflict` (e.g. 3 of 30 simultaneous PATCHes in
+  testing). No update is ever lost; the client just needs to retry. Jittered
+  backoff between attempts would reduce this.
 - **Offset pagination** gets slower for very deep pages and can shift if rows
   are inserted between page requests. Cursor (keyset) pagination would fix
   both.
@@ -584,8 +635,8 @@ the API and PostgreSQL comply:
 Deliberately left out of scope to focus on core quality, in rough priority
 order:
 
-- **Optimistic concurrency:** a `version` field with `ETag` / `If-Match`
-  returning `412 Precondition Failed` on conflicting writes
+- **Conditional GET:** `If-None-Match` returning `304 Not Modified`, reusing
+  the existing ETags
 - **Observability:** Prometheus `/metrics` (rate, errors, duration) and
   OpenTelemetry tracing
 - **CI/CD extensions:** image vulnerability scan (Trivy), the kind end-to-end

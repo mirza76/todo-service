@@ -29,6 +29,7 @@ type todoJSON struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
 	Completed bool      `json:"completed"`
+	Version   int64     `json:"version"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -78,6 +79,7 @@ type request struct {
 	path        string
 	body        string
 	contentType string // defaults to application/json when body is set
+	ifMatch     string
 }
 
 func do(t *testing.T, h http.Handler, req request) *httptest.ResponseRecorder {
@@ -92,6 +94,9 @@ func do(t *testing.T, h http.Handler, req request) *httptest.ResponseRecorder {
 		r.Header.Set("Content-Type", req.contentType)
 	case req.body != "":
 		r.Header.Set("Content-Type", "application/json")
+	}
+	if req.ifMatch != "" {
+		r.Header.Set("If-Match", req.ifMatch)
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
@@ -287,6 +292,69 @@ func TestPatch(t *testing.T) {
 					assertFieldErrors(t, p, tt.wantFields)
 				}
 			})
+		}
+	})
+}
+
+func TestETagAndIfMatch(t *testing.T) {
+	h := newRealHandler()
+
+	rec := do(t, h, request{method: http.MethodPost, path: "/todos", body: `{"title":"Versioned"}`})
+	created := decode[todoJSON](t, rec)
+	if created.Version != 1 || rec.Header().Get("ETag") != `"1"` {
+		t.Fatalf("create: version %d ETag %q, want 1 and \"1\"", created.Version, rec.Header().Get("ETag"))
+	}
+	path := "/todos/" + created.ID
+
+	if etag := do(t, h, request{method: http.MethodGet, path: path}).Header().Get("ETag"); etag != `"1"` {
+		t.Errorf("GET ETag = %q, want \"1\"", etag)
+	}
+
+	t.Run("matching If-Match succeeds and returns the new ETag", func(t *testing.T) {
+		rec := do(t, h, request{method: http.MethodPatch, path: path, body: `{"completed":true}`, ifMatch: `"1"`})
+		if rec.Code != http.StatusOK || rec.Header().Get("ETag") != `"2"` {
+			t.Fatalf("status %d ETag %q, want 200 and \"2\"; body %s", rec.Code, rec.Header().Get("ETag"), rec.Body)
+		}
+		if got := decode[todoJSON](t, rec); got.Version != 2 {
+			t.Errorf("version = %d, want 2", got.Version)
+		}
+	})
+
+	stale := []struct{ name, method, body, ifMatch string }{
+		{"PUT with stale version", http.MethodPut, `{"title":"x","completed":false}`, `"1"`},
+		{"PATCH with stale version", http.MethodPatch, `{"completed":false}`, `"1"`},
+		{"DELETE with stale version", http.MethodDelete, "", `"1"`},
+		{"weak ETag never matches", http.MethodPatch, `{"completed":false}`, `W/"2"`},
+		{"unquoted ETag never matches", http.MethodPatch, `{"completed":false}`, `2`},
+	}
+	for _, tt := range stale {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(t, h, request{method: tt.method, path: path, body: tt.body, ifMatch: tt.ifMatch})
+			assertProblem(t, rec, http.StatusPreconditionFailed, "has changed since you last read it")
+		})
+	}
+
+	if got := decode[todoJSON](t, do(t, h, request{method: http.MethodGet, path: path})); got.Version != 2 || !got.Completed {
+		t.Errorf("after rejected writes: %+v, want unchanged version 2", got)
+	}
+
+	t.Run("list of tags matches if any matches", func(t *testing.T) {
+		rec := do(t, h, request{method: http.MethodPatch, path: path, body: `{"title":"Listed"}`, ifMatch: `"7", "2"`})
+		if rec.Code != http.StatusOK || rec.Header().Get("ETag") != `"3"` {
+			t.Fatalf("status %d ETag %q, want 200 and \"3\"", rec.Code, rec.Header().Get("ETag"))
+		}
+	})
+
+	t.Run("wildcard is unconditional", func(t *testing.T) {
+		rec := do(t, h, request{method: http.MethodPut, path: path, body: `{"title":"Any","completed":false}`, ifMatch: "*"})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d, want 200; body %s", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("matching If-Match on DELETE", func(t *testing.T) {
+		if rec := do(t, h, request{method: http.MethodDelete, path: path, ifMatch: `"4"`}); rec.Code != http.StatusNoContent {
+			t.Fatalf("status %d, want 204; body %s", rec.Code, rec.Body)
 		}
 	})
 }

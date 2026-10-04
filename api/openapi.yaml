@@ -13,6 +13,9 @@ info:
       as `request_id`.
     - `400` means the request could not be parsed; `422` means it parsed but
       broke a validation rule.
+    - Optimistic concurrency: todo responses carry an `ETag` (the version).
+      Send it back in `If-Match` on PUT, PATCH, or DELETE; if the todo changed
+      in the meantime the write is rejected with `412`.
 
 servers:
   - url: http://localhost:8080
@@ -92,6 +95,8 @@ paths:
         "201":
           description: Created.
           headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
             Location:
               description: URL of the new todo.
               schema:
@@ -129,6 +134,8 @@ paths:
         "200":
           description: The todo.
           headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
             X-Request-ID:
               $ref: "#/components/headers/XRequestID"
           content:
@@ -156,10 +163,14 @@ paths:
             example:
               title: Buy oat milk
               completed: true
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       responses:
         "200":
           description: The replaced todo.
           headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
             X-Request-ID:
               $ref: "#/components/headers/XRequestID"
           content:
@@ -170,6 +181,10 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
         "413":
           $ref: "#/components/responses/ContentTooLarge"
         "415":
@@ -201,10 +216,14 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/TodoPatch"
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       responses:
         "200":
           description: The updated todo.
           headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
             X-Request-ID:
               $ref: "#/components/headers/XRequestID"
           content:
@@ -215,6 +234,10 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
         "413":
           $ref: "#/components/responses/ContentTooLarge"
         "415":
@@ -230,6 +253,8 @@ paths:
       tags: [todos]
       operationId: deleteTodo
       summary: Delete a todo
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
       responses:
         "204":
           description: Deleted.
@@ -238,6 +263,10 @@ paths:
               $ref: "#/components/headers/XRequestID"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -303,6 +332,17 @@ components:
       schema:
         type: string
         format: uuid
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: |
+        Optimistic concurrency precondition (RFC 9110 §13.1.1). One or more
+        strong ETags, e.g. `"3"` or `"3", "4"`, or `*`. The write succeeds only
+        if the todo's current ETag matches; otherwise `412`. Weak or malformed
+        tags never match. Without this header, writes are unconditional.
+      schema:
+        type: string
     RequestID:
       name: X-Request-ID
       in: header
@@ -315,6 +355,11 @@ components:
         maxLength: 128
 
   headers:
+    ETag:
+      description: Strong entity tag holding the todo's version, e.g. `"3"`.
+      schema:
+        type: string
+        examples: ['"3"']
     XRequestID:
       description: Correlation ID for this request; also present in server logs.
       schema:
@@ -324,7 +369,7 @@ components:
     Todo:
       type: object
       additionalProperties: false
-      required: [id, title, completed, created_at, updated_at]
+      required: [id, title, completed, version, created_at, updated_at]
       properties:
         id:
           type: string
@@ -335,6 +380,11 @@ components:
           $ref: "#/components/schemas/Title"
         completed:
           type: boolean
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Starts at 1 and increases by one on every change. Also sent as the `ETag` header.
         created_at:
           type: string
           format: date-time
@@ -456,6 +506,24 @@ components:
             enum: [ok, fail]
 
   responses:
+    PreconditionFailed:
+      description: If-Match does not match the todo's current ETag.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Conflict:
+      description: The todo kept changing concurrently and the write could not be applied. Retry.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     BadRequest:
       description: The request could not be parsed.
       headers:

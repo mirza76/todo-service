@@ -36,7 +36,7 @@ func TestNew_Valid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New() unexpected error: %v", err)
 			}
-			want := todo.Todo{ID: testID, Title: tt.wantTitle, Completed: true, CreatedAt: testTime, UpdatedAt: testTime}
+			want := todo.Todo{ID: testID, Title: tt.wantTitle, Completed: true, Version: 1, CreatedAt: testTime, UpdatedAt: testTime}
 			if got != want {
 				t.Errorf("New() = %+v, want %+v", got, want)
 			}
@@ -73,12 +73,12 @@ func TestReplace(t *testing.T) {
 	}
 	later := testTime.Add(time.Hour)
 
-	t.Run("valid replacement updates fields and UpdatedAt only", func(t *testing.T) {
+	t.Run("valid replacement updates fields, bumps version and UpdatedAt", func(t *testing.T) {
 		got := created
 		if err := got.Replace("  Updated ", true, later); err != nil {
 			t.Fatalf("Replace() unexpected error: %v", err)
 		}
-		want := todo.Todo{ID: testID, Title: "Updated", Completed: true, CreatedAt: testTime, UpdatedAt: later}
+		want := todo.Todo{ID: testID, Title: "Updated", Completed: true, Version: 2, CreatedAt: testTime, UpdatedAt: later}
 		if got != want {
 			t.Errorf("after Replace() = %+v, want %+v", got, want)
 		}
@@ -111,17 +111,17 @@ func TestApply(t *testing.T) {
 		{
 			name:  "title only keeps completed",
 			patch: todo.Patch{Title: title(" Renamed ")},
-			want:  todo.Todo{ID: testID, Title: "Renamed", Completed: false, CreatedAt: testTime, UpdatedAt: later},
+			want:  todo.Todo{ID: testID, Title: "Renamed", Completed: false, Version: 2, CreatedAt: testTime, UpdatedAt: later},
 		},
 		{
 			name:  "completed only keeps title",
 			patch: todo.Patch{Completed: done(true)},
-			want:  todo.Todo{ID: testID, Title: "Original", Completed: true, CreatedAt: testTime, UpdatedAt: later},
+			want:  todo.Todo{ID: testID, Title: "Original", Completed: true, Version: 2, CreatedAt: testTime, UpdatedAt: later},
 		},
 		{
 			name:  "both fields",
 			patch: todo.Patch{Title: title("Both"), Completed: done(true)},
-			want:  todo.Todo{ID: testID, Title: "Both", Completed: true, CreatedAt: testTime, UpdatedAt: later},
+			want:  todo.Todo{ID: testID, Title: "Both", Completed: true, Version: 2, CreatedAt: testTime, UpdatedAt: later},
 		},
 	}
 

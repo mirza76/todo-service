@@ -95,9 +95,9 @@ func New(pool *pgxpool.Pool) *Repository {
 // Create inserts t, mapping a primary key conflict to todo.ErrAlreadyExists.
 func (r *Repository) Create(ctx context.Context, t todo.Todo) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO todos (id, title, completed, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		t.ID, t.Title, t.Completed, t.CreatedAt, t.UpdatedAt,
+		`INSERT INTO todos (id, title, completed, version, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		t.ID, t.Title, t.Completed, t.Version, t.CreatedAt, t.UpdatedAt,
 	)
 	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == uniqueViolation {
 		return todo.ErrAlreadyExists
@@ -108,7 +108,7 @@ func (r *Repository) Create(ctx context.Context, t todo.Todo) error {
 // Get returns the todo with the given ID.
 func (r *Repository) Get(ctx context.Context, id uuid.UUID) (todo.Todo, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, title, completed, created_at, updated_at FROM todos WHERE id = $1`, id)
+		`SELECT id, title, completed, version, created_at, updated_at FROM todos WHERE id = $1`, id)
 	if err != nil {
 		return todo.Todo{}, err
 	}
@@ -134,7 +134,7 @@ func (r *Repository) List(ctx context.Context, params todo.ListParams) (todo.Pag
 			return fmt.Errorf("count todos: %w", err)
 		}
 		rows, err := tx.Query(ctx,
-			`SELECT id, title, completed, created_at, updated_at FROM todos
+			`SELECT id, title, completed, version, created_at, updated_at FROM todos
 			 WHERE ($1::boolean IS NULL OR completed = $1)
 			 ORDER BY created_at, id
 			 LIMIT $2 OFFSET $3`,
@@ -154,39 +154,59 @@ func (r *Repository) List(ctx context.Context, params todo.ListParams) (todo.Pag
 	return page, nil
 }
 
-// Update overwrites title, completed, and updated_at. created_at is never
-// written after insert.
-func (r *Repository) Update(ctx context.Context, t todo.Todo) error {
+// Update is an atomic compare-and-set: the row is written only if its
+// version still equals expectedVersion, so concurrent writers on any replica
+// cannot overwrite each other unknowingly. created_at is never written
+// after insert.
+func (r *Repository) Update(ctx context.Context, t todo.Todo, expectedVersion int64) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE todos SET title = $2, completed = $3, updated_at = $4 WHERE id = $1`,
-		t.ID, t.Title, t.Completed, t.UpdatedAt,
+		`UPDATE todos SET title = $2, completed = $3, version = $4, updated_at = $5
+		 WHERE id = $1 AND version = $6`,
+		t.ID, t.Title, t.Completed, t.Version, t.UpdatedAt, expectedVersion,
 	)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return todo.ErrNotFound
+		return r.missOrConflict(ctx, t.ID)
 	}
 	return nil
 }
 
-// Delete removes the todo with the given ID.
-func (r *Repository) Delete(ctx context.Context, id uuid.UUID) error {
-	tag, err := r.pool.Exec(ctx, `DELETE FROM todos WHERE id = $1`, id)
+// Delete removes the todo with the given ID, if its version equals
+// expectedVersion (or unconditionally with todo.AnyVersion).
+func (r *Repository) Delete(ctx context.Context, id uuid.UUID, expectedVersion int64) error {
+	tag, err := r.pool.Exec(ctx,
+		`DELETE FROM todos WHERE id = $1 AND ($2 = 0 OR version = $2)`,
+		id, expectedVersion,
+	)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return todo.ErrNotFound
+		return r.missOrConflict(ctx, id)
 	}
 	return nil
+}
+
+// missOrConflict explains why a conditional write matched no row: the todo
+// either doesn't exist or has a different version.
+func (r *Repository) missOrConflict(ctx context.Context, id uuid.UUID) error {
+	var exists bool
+	if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM todos WHERE id = $1)`, id).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return todo.ErrVersionConflict
+	}
+	return todo.ErrNotFound
 }
 
 // scanTodo maps a row to a Todo. Timestamps are normalized to UTC because
 // pgx returns them in the process's local time zone.
 func scanTodo(row pgx.CollectableRow) (todo.Todo, error) {
 	var t todo.Todo
-	if err := row.Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt, &t.UpdatedAt); err != nil {
+	if err := row.Scan(&t.ID, &t.Title, &t.Completed, &t.Version, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return todo.Todo{}, err
 	}
 	t.CreatedAt = t.CreatedAt.UTC()

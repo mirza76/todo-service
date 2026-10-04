@@ -76,6 +76,18 @@ func writeError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err
 	case errors.Is(err, todo.ErrNotFound):
 		writeProblem(w, r, problem{Status: http.StatusNotFound, Detail: "Todo not found."})
 
+	case errors.Is(err, todo.ErrPreconditionFailed):
+		writeProblem(w, r, problem{
+			Status: http.StatusPreconditionFailed,
+			Detail: "The todo has changed since you last read it (If-Match does not match the current ETag). Fetch it again and retry.",
+		})
+
+	case errors.Is(err, todo.ErrVersionConflict):
+		writeProblem(w, r, problem{
+			Status: http.StatusConflict,
+			Detail: "The todo was modified concurrently. Please retry.",
+		})
+
 	case errors.Is(err, todo.ErrAlreadyExists):
 		writeProblem(w, r, problem{Status: http.StatusConflict, Detail: "Todo already exists."})
 

@@ -37,9 +37,10 @@ func TestConcurrentAccess(t *testing.T) {
 			}
 			_, _ = repo.Get(ctx, item.ID)
 			_, _ = repo.List(ctx, todo.ListParams{Limit: 10})
+			expected := item.Version
 			_ = item.Replace("updated", true, now)
-			_ = repo.Update(ctx, item)
-			_ = repo.Delete(ctx, item.ID)
+			_ = repo.Update(ctx, item, expected)
+			_ = repo.Delete(ctx, item.ID, todo.AnyVersion)
 		})
 	}
 	wg.Wait()

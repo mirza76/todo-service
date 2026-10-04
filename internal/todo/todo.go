@@ -22,6 +22,9 @@ type Todo struct {
 	ID        uuid.UUID
 	Title     string
 	Completed bool
+	// Version starts at 1 and increases by one on every change. It drives
+	// optimistic concurrency control (ETag / If-Match).
+	Version   int64
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -37,13 +40,15 @@ func New(id uuid.UUID, title string, completed bool, now time.Time) (Todo, error
 		ID:        id,
 		Title:     title,
 		Completed: completed,
+		Version:   1,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, nil
 }
 
-// Replace overwrites all client-controlled fields (PUT semantics). The ID and
-// CreatedAt are immutable. On validation failure t is left unchanged.
+// Replace overwrites all client-controlled fields (PUT semantics) and bumps
+// the version. The ID and CreatedAt are immutable. On validation failure t
+// is left unchanged.
 func (t *Todo) Replace(title string, completed bool, now time.Time) error {
 	title, err := normalizeTitle(title)
 	if err != nil {
@@ -51,6 +56,7 @@ func (t *Todo) Replace(title string, completed bool, now time.Time) error {
 	}
 	t.Title = title
 	t.Completed = completed
+	t.Version++
 	t.UpdatedAt = now
 	return nil
 }

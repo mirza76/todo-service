@@ -85,8 +85,9 @@ func (r *Repository) List(ctx context.Context, params todo.ListParams) (todo.Pag
 	return todo.Page{Items: all[start:end], Total: len(all)}, nil
 }
 
-// Update overwrites Title, Completed, and UpdatedAt of an existing todo.
-func (r *Repository) Update(ctx context.Context, t todo.Todo) error {
+// Update overwrites Title, Completed, Version, and UpdatedAt of an existing
+// todo if its stored version equals expectedVersion (compare-and-set).
+func (r *Repository) Update(ctx context.Context, t todo.Todo, expectedVersion int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -97,23 +98,32 @@ func (r *Repository) Update(ctx context.Context, t todo.Todo) error {
 	if !ok {
 		return todo.ErrNotFound
 	}
+	if existing.Version != expectedVersion {
+		return todo.ErrVersionConflict
+	}
 	existing.Title = t.Title
 	existing.Completed = t.Completed
+	existing.Version = t.Version
 	existing.UpdatedAt = t.UpdatedAt
 	r.items[t.ID] = existing
 	return nil
 }
 
-// Delete removes the todo with the given ID.
-func (r *Repository) Delete(ctx context.Context, id uuid.UUID) error {
+// Delete removes the todo with the given ID, if its version equals
+// expectedVersion (or unconditionally with todo.AnyVersion).
+func (r *Repository) Delete(ctx context.Context, id uuid.UUID, expectedVersion int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, ok := r.items[id]; !ok {
+	existing, ok := r.items[id]
+	if !ok {
 		return todo.ErrNotFound
+	}
+	if expectedVersion != todo.AnyVersion && existing.Version != expectedVersion {
+		return todo.ErrVersionConflict
 	}
 	delete(r.items, id)
 	return nil

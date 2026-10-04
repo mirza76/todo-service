@@ -12,3 +12,4 @@ alternatives considered, and the consequences.
 | [0005](0005-health-checks-and-graceful-shutdown.md) | Health checks and graceful shutdown | Accepted |
 | [0006](0006-uuidv7-ids-and-offset-pagination.md) | UUIDv7 identifiers and offset pagination | Accepted |
 | [0007](0007-kubernetes-layout-and-hardening.md) | Kustomize layout, hardening, and credential handling | Accepted |
+| [0008](0008-optimistic-concurrency.md) | Optimistic concurrency with versions, ETag, and If-Match | Accepted |

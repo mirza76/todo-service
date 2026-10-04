@@ -6,7 +6,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -100,47 +102,108 @@ func (s *Service) List(ctx context.Context, params todo.ListParams) (todo.Page, 
 	return page, nil
 }
 
+// IfMatch is a client precondition on the current version (HTTP If-Match).
+// The zero value is unconditional.
+type IfMatch struct {
+	set      bool
+	versions []int64
+}
+
+// MatchVersions returns a precondition satisfied only by one of versions.
+// With no versions it can never be satisfied (e.g. only weak or malformed
+// ETags were sent).
+func MatchVersions(versions ...int64) IfMatch {
+	return IfMatch{set: true, versions: versions}
+}
+
+func (m IfMatch) matches(version int64) bool {
+	return !m.set || slices.Contains(m.versions, version)
+}
+
+// maxWriteAttempts bounds retries of an unconditional read-modify-write that
+// keeps losing compare-and-set races.
+const maxWriteAttempts = 3
+
 // Replace overwrites all client-controlled fields of an existing todo.
-//
-// Concurrent replacements of the same todo are last-write-wins.
-func (s *Service) Replace(ctx context.Context, id uuid.UUID, in ReplaceInput) (todo.Todo, error) {
-	t, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return todo.Todo{}, fmt.Errorf("get todo %s: %w", id, err)
-	}
-	if err := t.Replace(in.Title, in.Completed, s.timestamp()); err != nil {
-		return todo.Todo{}, err
-	}
-	if err := s.repo.Update(ctx, t); err != nil {
-		return todo.Todo{}, fmt.Errorf("update todo %s: %w", id, err)
-	}
-	return t, nil
+func (s *Service) Replace(ctx context.Context, id uuid.UUID, in ReplaceInput, cond IfMatch) (todo.Todo, error) {
+	return s.modify(ctx, id, cond, func(t *todo.Todo) (bool, error) {
+		return true, t.Replace(in.Title, in.Completed, s.timestamp())
+	})
 }
 
 // Update applies a partial update (PATCH semantics). An empty patch is a
-// no-op that returns the current todo without bumping UpdatedAt.
-//
-// Concurrent updates of the same todo are last-write-wins.
-func (s *Service) Update(ctx context.Context, id uuid.UUID, patch todo.Patch) (todo.Todo, error) {
-	t, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return todo.Todo{}, fmt.Errorf("get todo %s: %w", id, err)
-	}
-	if patch.IsEmpty() {
-		return t, nil
-	}
-	if err := t.Apply(patch, s.timestamp()); err != nil {
-		return todo.Todo{}, err
-	}
-	if err := s.repo.Update(ctx, t); err != nil {
-		return todo.Todo{}, fmt.Errorf("update todo %s: %w", id, err)
-	}
-	return t, nil
+// no-op that returns the current todo without bumping its version.
+func (s *Service) Update(ctx context.Context, id uuid.UUID, patch todo.Patch, cond IfMatch) (todo.Todo, error) {
+	return s.modify(ctx, id, cond, func(t *todo.Todo) (bool, error) {
+		if patch.IsEmpty() {
+			return false, nil
+		}
+		return true, t.Apply(patch, s.timestamp())
+	})
 }
 
-// Delete removes a todo.
-func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
-	if err := s.repo.Delete(ctx, id); err != nil {
+// modify runs a read-modify-write with optimistic concurrency control:
+//
+//   - The client precondition (If-Match) is checked against the version read;
+//     a mismatch is ErrPreconditionFailed.
+//   - The write is a compare-and-set on that version, so a concurrent change
+//     made between the read and the write (on any replica) is detected.
+//   - With a precondition, such a race means the client's version is now
+//     stale: ErrPreconditionFailed. Without one, the change is re-applied to
+//     the fresh state, so concurrent PATCHes of different fields both
+//     survive. After maxWriteAttempts it gives up with ErrVersionConflict.
+func (s *Service) modify(ctx context.Context, id uuid.UUID, cond IfMatch, change func(*todo.Todo) (bool, error)) (todo.Todo, error) {
+	for attempt := 1; ; attempt++ {
+		t, err := s.repo.Get(ctx, id)
+		if err != nil {
+			return todo.Todo{}, fmt.Errorf("get todo %s: %w", id, err)
+		}
+		if !cond.matches(t.Version) {
+			return todo.Todo{}, fmt.Errorf("todo %s is at version %d: %w", id, t.Version, todo.ErrPreconditionFailed)
+		}
+
+		readVersion := t.Version
+		changed, err := change(&t)
+		if err != nil {
+			return todo.Todo{}, err
+		}
+		if !changed {
+			return t, nil
+		}
+
+		err = s.repo.Update(ctx, t, readVersion)
+		switch {
+		case err == nil:
+			return t, nil
+		case errors.Is(err, todo.ErrVersionConflict) && cond.set:
+			return todo.Todo{}, fmt.Errorf("update todo %s: %w", id, todo.ErrPreconditionFailed)
+		case errors.Is(err, todo.ErrVersionConflict) && attempt < maxWriteAttempts:
+			continue
+		default:
+			return todo.Todo{}, fmt.Errorf("update todo %s: %w", id, err)
+		}
+	}
+}
+
+// Delete removes a todo, honoring an optional If-Match precondition.
+func (s *Service) Delete(ctx context.Context, id uuid.UUID, cond IfMatch) error {
+	expected := todo.AnyVersion
+	if cond.set {
+		t, err := s.repo.Get(ctx, id)
+		if err != nil {
+			return fmt.Errorf("get todo %s: %w", id, err)
+		}
+		if !cond.matches(t.Version) {
+			return fmt.Errorf("todo %s is at version %d: %w", id, t.Version, todo.ErrPreconditionFailed)
+		}
+		expected = t.Version
+	}
+
+	err := s.repo.Delete(ctx, id, expected)
+	if errors.Is(err, todo.ErrVersionConflict) {
+		err = todo.ErrPreconditionFailed // changed between our read and delete
+	}
+	if err != nil {
 		return fmt.Errorf("delete todo %s: %w", id, err)
 	}
 	return nil

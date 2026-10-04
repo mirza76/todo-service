@@ -27,8 +27,12 @@ type Page struct {
 //
 //   - Get, Update, and Delete return ErrNotFound for unknown IDs.
 //   - Create returns ErrAlreadyExists if the ID is already taken.
-//   - Update persists Title, Completed, and UpdatedAt only; CreatedAt is
+//   - Update is a compare-and-set: it writes only if the stored version
+//     equals expectedVersion, otherwise it returns ErrVersionConflict. It
+//     persists Title, Completed, Version, and UpdatedAt; CreatedAt is
 //     immutable once created.
+//   - Delete with expectedVersion AnyVersion is unconditional; otherwise it
+//     is a compare-and-set like Update.
 //   - List orders by CreatedAt ascending, then ID ascending, so pagination is
 //     stable, and Items is never nil. Total counts only todos matching the
 //     filter.
@@ -37,6 +41,10 @@ type Repository interface {
 	Create(ctx context.Context, t Todo) error
 	Get(ctx context.Context, id uuid.UUID) (Todo, error)
 	List(ctx context.Context, params ListParams) (Page, error)
-	Update(ctx context.Context, t Todo) error
-	Delete(ctx context.Context, id uuid.UUID) error
+	Update(ctx context.Context, t Todo, expectedVersion int64) error
+	Delete(ctx context.Context, id uuid.UUID, expectedVersion int64) error
 }
+
+// AnyVersion disables the version check in Repository.Delete. Versions start
+// at 1, so 0 never identifies a real version.
+const AnyVersion int64 = 0

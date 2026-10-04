@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,8 +38,11 @@ func Run(t *testing.T, newRepo Factory) {
 		{"Update", testUpdate},
 		{"UpdateKeepsCreatedAt", testUpdateKeepsCreatedAt},
 		{"UpdateNotFound", testUpdateNotFound},
+		{"UpdateVersionConflict", testUpdateVersionConflict},
+		{"ConcurrentUpdatesExactlyOneWins", testConcurrentUpdatesExactlyOneWins},
 		{"Delete", testDelete},
 		{"DeleteNotFound", testDeleteNotFound},
+		{"DeleteWithVersion", testDeleteWithVersion},
 		{"ListEmpty", testListEmpty},
 		{"ListOrdering", testListOrdering},
 		{"ListPagination", testListPagination},
@@ -89,10 +93,11 @@ func testUpdate(t *testing.T, repo todo.Repository) {
 	ctx := t.Context()
 	item := mustCreate(t, repo, newTodo(t, uuid.New(), "Before", baseTime))
 
+	expected := item.Version
 	if err := item.Replace("After", true, baseTime.Add(time.Minute)); err != nil {
 		t.Fatalf("Replace() unexpected error: %v", err)
 	}
-	if err := repo.Update(ctx, item); err != nil {
+	if err := repo.Update(ctx, item, expected); err != nil {
 		t.Fatalf("Update() unexpected error: %v", err)
 	}
 
@@ -110,7 +115,8 @@ func testUpdateKeepsCreatedAt(t *testing.T, repo todo.Repository) {
 	tampered := item
 	tampered.CreatedAt = baseTime.Add(-24 * time.Hour)
 	tampered.UpdatedAt = baseTime.Add(time.Minute)
-	if err := repo.Update(ctx, tampered); err != nil {
+	tampered.Version++
+	if err := repo.Update(ctx, tampered, item.Version); err != nil {
 		t.Fatalf("Update() unexpected error: %v", err)
 	}
 
@@ -125,8 +131,72 @@ func testUpdateKeepsCreatedAt(t *testing.T, repo todo.Repository) {
 
 func testUpdateNotFound(t *testing.T, repo todo.Repository) {
 	missing := newTodo(t, uuid.New(), "Ghost", baseTime)
-	if err := repo.Update(t.Context(), missing); !errors.Is(err, todo.ErrNotFound) {
+	if err := repo.Update(t.Context(), missing, missing.Version); !errors.Is(err, todo.ErrNotFound) {
 		t.Fatalf("Update() error = %v, want ErrNotFound", err)
+	}
+}
+
+func testUpdateVersionConflict(t *testing.T, repo todo.Repository) {
+	ctx := t.Context()
+	item := mustCreate(t, repo, newTodo(t, uuid.New(), "Original", baseTime))
+
+	stale := item
+	if err := stale.Replace("Stale write", true, baseTime.Add(time.Minute)); err != nil {
+		t.Fatalf("Replace() unexpected error: %v", err)
+	}
+	if err := repo.Update(ctx, stale, item.Version+5); !errors.Is(err, todo.ErrVersionConflict) {
+		t.Fatalf("Update() with wrong expected version error = %v, want ErrVersionConflict", err)
+	}
+
+	got, err := repo.Get(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("Get() unexpected error: %v", err)
+	}
+	assertTodoEqual(t, got, item) // nothing was written
+}
+
+// testConcurrentUpdatesExactlyOneWins races writers that all read version 1.
+// Compare-and-set must let exactly one succeed; the rest must see a conflict.
+func testConcurrentUpdatesExactlyOneWins(t *testing.T, repo todo.Repository) {
+	ctx := t.Context()
+	item := mustCreate(t, repo, newTodo(t, uuid.New(), "Contended", baseTime))
+
+	const writers = 10
+	errs := make([]error, writers)
+	var wg sync.WaitGroup
+	for i := range writers {
+		wg.Go(func() {
+			w := item
+			if err := w.Replace(fmt.Sprintf("writer %d", i), true, baseTime.Add(time.Minute)); err != nil {
+				errs[i] = err
+				return
+			}
+			errs[i] = repo.Update(ctx, w, item.Version)
+		})
+	}
+	wg.Wait()
+
+	wins, conflicts := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			wins++
+		case errors.Is(err, todo.ErrVersionConflict):
+			conflicts++
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if wins != 1 || conflicts != writers-1 {
+		t.Errorf("wins = %d, conflicts = %d; want exactly 1 win and %d conflicts", wins, conflicts, writers-1)
+	}
+
+	got, err := repo.Get(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("Get() unexpected error: %v", err)
+	}
+	if got.Version != item.Version+1 {
+		t.Errorf("Version = %d, want %d", got.Version, item.Version+1)
 	}
 }
 
@@ -134,20 +204,38 @@ func testDelete(t *testing.T, repo todo.Repository) {
 	ctx := t.Context()
 	item := mustCreate(t, repo, newTodo(t, uuid.New(), "Doomed", baseTime))
 
-	if err := repo.Delete(ctx, item.ID); err != nil {
+	if err := repo.Delete(ctx, item.ID, todo.AnyVersion); err != nil {
 		t.Fatalf("Delete() unexpected error: %v", err)
 	}
 	if _, err := repo.Get(ctx, item.ID); !errors.Is(err, todo.ErrNotFound) {
 		t.Fatalf("Get() after Delete() error = %v, want ErrNotFound", err)
 	}
-	if err := repo.Delete(ctx, item.ID); !errors.Is(err, todo.ErrNotFound) {
+	if err := repo.Delete(ctx, item.ID, todo.AnyVersion); !errors.Is(err, todo.ErrNotFound) {
 		t.Fatalf("second Delete() error = %v, want ErrNotFound", err)
 	}
 }
 
 func testDeleteNotFound(t *testing.T, repo todo.Repository) {
-	if err := repo.Delete(t.Context(), uuid.New()); !errors.Is(err, todo.ErrNotFound) {
+	if err := repo.Delete(t.Context(), uuid.New(), todo.AnyVersion); !errors.Is(err, todo.ErrNotFound) {
 		t.Fatalf("Delete() error = %v, want ErrNotFound", err)
+	}
+	if err := repo.Delete(t.Context(), uuid.New(), 1); !errors.Is(err, todo.ErrNotFound) {
+		t.Fatalf("Delete() with version error = %v, want ErrNotFound", err)
+	}
+}
+
+func testDeleteWithVersion(t *testing.T, repo todo.Repository) {
+	ctx := t.Context()
+	item := mustCreate(t, repo, newTodo(t, uuid.New(), "Versioned", baseTime))
+
+	if err := repo.Delete(ctx, item.ID, item.Version+1); !errors.Is(err, todo.ErrVersionConflict) {
+		t.Fatalf("Delete() with wrong version error = %v, want ErrVersionConflict", err)
+	}
+	if _, err := repo.Get(ctx, item.ID); err != nil {
+		t.Fatalf("todo deleted despite version conflict: %v", err)
+	}
+	if err := repo.Delete(ctx, item.ID, item.Version); err != nil {
+		t.Fatalf("Delete() with matching version unexpected error: %v", err)
 	}
 }
 
@@ -267,8 +355,8 @@ func testCanceledContext(t *testing.T, repo todo.Repository) {
 	item := newTodo(t, uuid.New(), "Never stored", baseTime)
 	checks := map[string]error{
 		"Create": repo.Create(ctx, item),
-		"Update": repo.Update(ctx, item),
-		"Delete": repo.Delete(ctx, item.ID),
+		"Update": repo.Update(ctx, item, item.Version),
+		"Delete": repo.Delete(ctx, item.ID, todo.AnyVersion),
 	}
 	_, checks["Get"] = repo.Get(ctx, item.ID)
 	_, checks["List"] = repo.List(ctx, todo.ListParams{Limit: 1})
@@ -304,7 +392,7 @@ func mustCreate(t *testing.T, repo todo.Repository, item todo.Todo) todo.Todo {
 // cause false failures.
 func assertTodoEqual(t *testing.T, got, want todo.Todo) {
 	t.Helper()
-	if got.ID != want.ID || got.Title != want.Title || got.Completed != want.Completed ||
+	if got.ID != want.ID || got.Title != want.Title || got.Completed != want.Completed || got.Version != want.Version ||
 		!got.CreatedAt.Equal(want.CreatedAt) || !got.UpdatedAt.Equal(want.UpdatedAt) {
 		t.Errorf("todo mismatch\n got: %+v\nwant: %+v", got, want)
 	}

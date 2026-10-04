@@ -51,6 +51,7 @@ func TestOpenAPIContract(t *testing.T) {
 		path        func() string
 		body        string
 		contentType string
+		ifMatch     string
 		wantStatus  int
 		// invalidRequest marks deliberately invalid requests: only the
 		// response is validated against the spec.
@@ -73,6 +74,9 @@ func TestOpenAPIContract(t *testing.T) {
 		{name: "replace", method: http.MethodPut, path: todoPath, body: `{"title":"Replaced","completed":true}`, wantStatus: http.StatusOK},
 		{name: "patch (merge-patch+json)", method: http.MethodPatch, path: todoPath, body: `{"completed":false}`, contentType: "application/merge-patch+json", wantStatus: http.StatusOK},
 		{name: "patch (application/json)", method: http.MethodPatch, path: todoPath, body: `{"title":"Patched"}`, wantStatus: http.StatusOK},
+		// Versions so far: create 1, replace 2, patch 3, patch 4.
+		{name: "patch with current If-Match", method: http.MethodPatch, path: todoPath, body: `{"completed":true}`, ifMatch: `"4"`, wantStatus: http.StatusOK},
+		{name: "replace with stale If-Match", method: http.MethodPut, path: todoPath, body: `{"title":"Late","completed":false}`, ifMatch: `"1"`, wantStatus: http.StatusPreconditionFailed},
 		{name: "delete", method: http.MethodDelete, path: todoPath, wantStatus: http.StatusNoContent},
 		{name: "get deleted", method: http.MethodGet, path: todoPath, wantStatus: http.StatusNotFound},
 
@@ -101,6 +105,9 @@ func TestOpenAPIContract(t *testing.T) {
 						ct = "application/json"
 					}
 					r.Header.Set("Content-Type", ct)
+				}
+				if st.ifMatch != "" {
+					r.Header.Set("If-Match", st.ifMatch)
 				}
 				return r
 			}

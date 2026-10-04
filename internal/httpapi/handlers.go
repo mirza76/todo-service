@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -20,9 +21,9 @@ type TodoService interface {
 	Create(ctx context.Context, in service.CreateInput) (todo.Todo, error)
 	Get(ctx context.Context, id uuid.UUID) (todo.Todo, error)
 	List(ctx context.Context, params todo.ListParams) (todo.Page, error)
-	Replace(ctx context.Context, id uuid.UUID, in service.ReplaceInput) (todo.Todo, error)
-	Update(ctx context.Context, id uuid.UUID, patch todo.Patch) (todo.Todo, error)
-	Delete(ctx context.Context, id uuid.UUID) error
+	Replace(ctx context.Context, id uuid.UUID, in service.ReplaceInput, cond service.IfMatch) (todo.Todo, error)
+	Update(ctx context.Context, id uuid.UUID, patch todo.Patch, cond service.IfMatch) (todo.Todo, error)
+	Delete(ctx context.Context, id uuid.UUID, cond service.IfMatch) error
 }
 
 type todoHandler struct {
@@ -72,6 +73,7 @@ func (h *todoHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Location", "/todos/"+t.ID.String())
+	setETag(w, t)
 	writeJSON(w, http.StatusCreated, toTodoResponse(t))
 }
 
@@ -86,6 +88,7 @@ func (h *todoHandler) get(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+	setETag(w, t)
 	writeJSON(w, http.StatusOK, toTodoResponse(t))
 }
 
@@ -105,11 +108,12 @@ func (h *todoHandler) replace(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	t, err := h.svc.Replace(r.Context(), id, in)
+	t, err := h.svc.Replace(r.Context(), id, in, parseIfMatch(r.Header))
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
+	setETag(w, t)
 	writeJSON(w, http.StatusOK, toTodoResponse(t))
 }
 
@@ -129,11 +133,12 @@ func (h *todoHandler) update(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	t, err := h.svc.Update(r.Context(), id, patch)
+	t, err := h.svc.Update(r.Context(), id, patch, parseIfMatch(r.Header))
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
+	setETag(w, t)
 	writeJSON(w, http.StatusOK, toTodoResponse(t))
 }
 
@@ -143,7 +148,7 @@ func (h *todoHandler) delete(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	if err := h.svc.Delete(r.Context(), id); err != nil {
+	if err := h.svc.Delete(r.Context(), id, parseIfMatch(r.Header)); err != nil {
 		h.fail(w, r, err)
 		return
 	}
@@ -152,6 +157,36 @@ func (h *todoHandler) delete(w http.ResponseWriter, r *http.Request) {
 
 func (h *todoHandler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	writeError(w, r, h.logger, err)
+}
+
+// setETag exposes the todo's version as a strong entity tag, e.g. "3".
+func setETag(w http.ResponseWriter, t todo.Todo) {
+	w.Header().Set("ETag", strconv.Quote(strconv.FormatInt(t.Version, 10)))
+}
+
+// parseIfMatch converts If-Match headers (RFC 9110 §13.1.1) into a service
+// precondition. Absent or "*" is unconditional (the todo must still exist).
+// If-Match uses strong comparison, so weak (W/"..") or malformed tags never
+// match; if none are usable the precondition can never be satisfied.
+func parseIfMatch(h http.Header) service.IfMatch {
+	values := h.Values("If-Match")
+	if len(values) == 0 {
+		return service.IfMatch{}
+	}
+	var versions []int64
+	for _, tag := range strings.Split(strings.Join(values, ","), ",") {
+		tag = strings.TrimSpace(tag)
+		if tag == "*" {
+			return service.IfMatch{}
+		}
+		if len(tag) < 3 || tag[0] != '"' || tag[len(tag)-1] != '"' {
+			continue
+		}
+		if v, err := strconv.ParseInt(tag[1:len(tag)-1], 10, 64); err == nil && v > 0 {
+			versions = append(versions, v)
+		}
+	}
+	return service.MatchVersions(versions...)
 }
 
 // pathID parses the {id} path segment. A malformed ID cannot identify an

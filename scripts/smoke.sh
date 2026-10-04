@@ -133,6 +133,38 @@ expect_status 422 "limit above maximum"
 request PATCH "/todos/$id" '{"title":null}'
 expect_status 422 "PATCH null title rejected"
 
+step "Optimistic concurrency (ETag / If-Match)"
+etag=$(curl -s -D - -o /dev/null "$BASE_URL/todos/$id" | tr -d '\r' | awk -F': ' 'tolower($1)=="etag"{print $2}')
+if [[ $etag =~ ^\"[0-9]+\"$ ]]; then ok "GET returns ETag $etag"; else bad "missing or malformed ETag: '$etag'"; fi
+status=$(curl -s -o "$TMP/body" -w '%{http_code}' -X PATCH -H 'Content-Type: application/json' \
+  -H "If-Match: \"999\"" -d '{"completed":true}' "$BASE_URL/todos/$id")
+body=$(cat "$TMP/body")
+expect_status 412 "PATCH with stale If-Match rejected"
+status=$(curl -s -o "$TMP/body" -w '%{http_code}' -X PATCH -H 'Content-Type: application/json' \
+  -H "If-Match: $etag" -d '{"completed":true}' "$BASE_URL/todos/$id")
+body=$(cat "$TMP/body")
+expect_status 200 "PATCH with current If-Match accepted"
+
+# Concurrent unconditional PATCHes hit both replicas. Compare-and-set in
+# PostgreSQL plus server-side retry means no update may be lost: the version
+# must advance by exactly the number of successful requests.
+request POST /todos '{"title":"contended"}'
+race_id=$(jq -r .id <<<"$body")
+for i in $(seq 1 30); do
+  curl -s -o /dev/null -w '%{http_code}\n' -X PATCH -H 'Content-Type: application/json' \
+    -d "{\"title\":\"writer $i\"}" "$BASE_URL/todos/$race_id" >>"$TMP/race" &
+done
+wait
+succeeded=$(grep -c '^200$' "$TMP/race" || true)
+request GET "/todos/$race_id"
+final_version=$(jq -r .version <<<"$body")
+if [[ $final_version -eq $((succeeded + 1)) ]]; then
+  ok "30 concurrent PATCHes: $succeeded succeeded, version advanced by exactly $succeeded (no lost updates)"
+else
+  bad "lost updates: $succeeded PATCHes succeeded but version is $final_version (want $((succeeded + 1)))"
+fi
+request DELETE "/todos/$race_id"
+
 step "Consistency across replicas (shared PostgreSQL)"
 request POST /todos '{"title":"consistency probe"}'
 probe_id=$(jq -r .id <<<"$body")
