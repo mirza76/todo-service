@@ -7,6 +7,10 @@ with Docker, deployed to Kubernetes with Kustomize, backed by PostgreSQL, and
 designed to survive restarts, rollouts, and pod failures without dropping
 requests.
 
+> 🎬 **Demo video:** [Watch on YouTube](https://www.youtube.com/watch?v=8QQQfQyaQQ0)
+> (Docker build and run, Kubernetes deployment, API usage, and CI; chapters
+> in the video description let you jump to each part.)
+
 ---
 
 ## Contents
