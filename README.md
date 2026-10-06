@@ -7,8 +7,6 @@ with Docker, deployed to Kubernetes with Kustomize, backed by PostgreSQL, and
 designed to survive restarts, rollouts, and pod failures without dropping
 requests.
 
-> **Demo video:** _[link to be added]_
-
 ---
 
 ## Contents
